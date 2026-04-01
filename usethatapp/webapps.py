@@ -16,7 +16,7 @@ def _normalize_hex(h: str) -> str:
     return h
 
 
-def get_product(
+def get_version(
     message,
     public_key_path: str,
     private_key_path: str,
@@ -94,4 +94,4 @@ def get_product(
         return decrypted
 
 
-__all__ = ["get_product"]
+__all__ = ["get_version"]
