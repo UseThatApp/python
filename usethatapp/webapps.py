@@ -17,49 +17,80 @@ def _normalize_hex(h: str) -> str:
 
 
 def get_version(
-    message,
+    envelope,
     public_key_path: str,
     private_key_path: str,
     encoding: str = "utf-8",
 ) -> Union[str, bytes]:
-    """Verify a hex signature and decrypt a hex-encoded encrypted message from a JSON message.
+    """Verify and decrypt an access-level response from ``requestAccessLevel()``.
+
+    The *envelope* is the object resolved by the ``requestAccessLevel()``
+    JavaScript function exposed by **usethatapp.js**.  It has the shape::
+
+        {
+            "type": "level",
+            "responseTo": "<request-id>",
+            "message": {
+                "contents": "<hex-encrypted-license>",
+                "signature": "<hex-signature>"
+            }
+        }
+
+    If the envelope carries an error (``type`` == ``"error"``), a
+    ``ValueError`` is raised with the server's error description.
 
     Args:
-        message: a dict or JSON string containing two keys: "signature" and "contents",
-                 both values should be hex strings (optionally prefixed with 0x).
-        public_key_path: path to the PEM public key file used to verify the signature
-        private_key_path: path to the PEM private key file used to decrypt the message
-        encoding: if provided, the decrypted bytes will be decoded to a string using this encoding;
-                  if decoding fails, the raw bytes are returned.
+        envelope: a dict or JSON string — the full postMessage envelope
+                  returned by ``requestAccessLevel()``.
+        public_key_path: path to the UseThatApp PEM public key file used
+                         to verify the signature.
+        private_key_path: path to the developer's PEM private key file
+                          used to decrypt the message.
+        encoding: the decrypted bytes will be decoded to a string using
+                  this encoding; if decoding fails the raw bytes are
+                  returned.
 
     Returns:
-        The decrypted message as a string (when decoding succeeds) or bytes.
+        The decrypted product name as a string (when decoding succeeds)
+        or bytes.
 
     Raises:
-        ValueError: on invalid inputs, missing keys, or failed signature verification.
+        ValueError: on invalid envelope, error responses, missing keys,
+                    or failed signature verification.
     """
-    # accept either a dict or a JSON string
-    if isinstance(message, str):
+    # ── parse input ──────────────────────────────────────────────────
+    if isinstance(envelope, str):
         try:
-            message_obj = json.loads(message)
+            envelope = json.loads(envelope)
         except Exception as e:
-            raise ValueError(f"failed to parse message JSON: {e}")
-    elif isinstance(message, dict):
-        message_obj = message
-    else:
-        raise ValueError("message must be a dict or JSON string")
+            raise ValueError(f"failed to parse envelope JSON: {e}")
+    elif not isinstance(envelope, dict):
+        raise ValueError("envelope must be a dict or JSON string")
 
-    # extract expected fields
-    try:
-        signature_hex = message_obj["signature"]
-        encrypted_message_hex = message_obj.get("contents") or message_obj.get("content")
-    except Exception as e:
-        raise ValueError(f"message must contain 'signature' and 'contents' fields: {e}")
+    # ── check envelope type ──────────────────────────────────────────
+    msg_type = envelope.get("type")
+    if msg_type == "error":
+        error_detail = envelope.get("message", "Unknown error")
+        raise ValueError(f"server error: {error_detail}")
+    if msg_type != "level":
+        raise ValueError(
+            f"unexpected envelope type '{msg_type}': expected 'level'"
+        )
 
+    # ── extract payload from envelope.message ────────────────────────
+    payload = envelope.get("message")
+    if not isinstance(payload, dict):
+        raise ValueError("envelope 'message' field must be a dict")
+
+    signature_hex = payload.get("signature")
+    encrypted_message_hex = payload.get("contents")
+
+    if signature_hex is None:
+        raise ValueError("payload missing 'signature' field")
     if encrypted_message_hex is None:
-        raise ValueError("message missing 'contents' field")
+        raise ValueError("payload missing 'contents' field")
 
-    # normalize and convert hex inputs to bytes
+    # ── hex → bytes ──────────────────────────────────────────────────
     try:
         sig_hex = _normalize_hex(signature_hex)
         msg_hex = _normalize_hex(encrypted_message_hex)
@@ -68,7 +99,7 @@ def get_version(
     except ValueError as e:
         raise ValueError(f"invalid hex input: {e}")
 
-    # load keys from files using the Keys helpers in encryption.py
+    # ── load keys ────────────────────────────────────────────────────
     try:
         public_key = Keys.read_public_key_from_file(public_key_path)
     except Exception as e:
@@ -79,15 +110,13 @@ def get_version(
     except Exception as e:
         raise ValueError(f"failed to read private key from '{private_key_path}': {e}")
 
-    # verify the signature against the encrypted message
-    verified = verify_signature(public_key, signature, encrypted_message)
-    if not verified:
+    # ── verify signature ─────────────────────────────────────────────
+    if not verify_signature(public_key, signature, encrypted_message):
         raise ValueError("signature verification failed")
 
-    # decrypt the message
+    # ── decrypt ──────────────────────────────────────────────────────
     decrypted = decrypt_message(private_key, encrypted_message)
 
-    # try to decode to text; if decoding fails, return raw bytes
     try:
         return decrypted.decode(encoding)
     except Exception:

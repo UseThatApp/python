@@ -31,22 +31,34 @@ Quick usage
 The package exposes a simple API in `usethatapp.webapps` and helpers in
 `usethatapp.encryption`.
 
-Example: verify signature and decrypt message from a JSON payload
+Example: verify signature and decrypt message from a ``requestAccessLevel()`` envelope
 
 ```python
 from usethatapp.webapps import get_version
 
-message_json = '{"signature": "0xdeadbeef...", "contents": "0x..."}'
+# The envelope returned by requestAccessLevel() via postMessage
+envelope = {
+    "type": "level",
+    "responseTo": "<request-id>",
+    "message": {
+        "contents": "0x...",
+        "signature": "0xdeadbeef..."
+    }
+}
 public_key_path = "./keys/public.pem"
 private_key_path = "./keys/private.pem"
 
-version = get_version(message_json, public_key_path, private_key_path)
-if version.lower() == 'pro':
-    # expose pro features
-    print('Pro version detected!')
+try:
+    version = get_version(envelope, public_key_path, private_key_path)
+except ValueError as e:
+    print(f"Error: {e}")
 else:
-    # hide pro features
-    print('Free version detected.')
+    if version.lower() == 'pro':
+        # expose pro features
+        print('Pro version detected!')
+    else:
+        # hide pro features
+        print('Free version detected.')
 ```
 
 Loading keys directly
@@ -65,8 +77,8 @@ priv = Keys.read_private_key_from_file('keys/private.pem')
 API reference
 -------------
 
-- usethatapp.webapps.get_version(message, public_key_path, private_key_path, encoding='utf-8')
-  - message: dict or JSON string containing 'signature' and 'contents' (hex strings, optionally prefixed with 0x)
+- usethatapp.webapps.get_version(envelope, public_key_path, private_key_path, encoding='utf-8')
+  - envelope: dict or JSON string — the full postMessage envelope returned by ``requestAccessLevel()``. Must have ``type`` (``"level"``), ``responseTo``, and a ``message`` dict containing ``contents`` and ``signature`` (hex strings, optionally prefixed with 0x). Envelopes with ``type`` ``"error"`` raise a ``ValueError``.
   - public_key_path / private_key_path: paths to PEM key files
   - encoding: attempt to decode decrypted bytes (defaults to 'utf-8')
   - returns: decoded string or raw bytes

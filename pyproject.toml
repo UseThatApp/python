@@ -4,14 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "usethatapp"
-version = "0.2.0"
+version = "0.3.0"
 description = "For use in your UseThatApp Web Apps"
 readme = { file = "README.md", content-type = "text/markdown" }
 authors = [{ name = "UseThatApp", email = "support@usethatapp.com"}]
 license = "MIT"
 license-files= ["LICENSE"]
 classifiers = [
-    "Development Status :: 4 - Beta",
     "Programming Language :: Python",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3 :: Only",
@@ -21,7 +20,6 @@ classifiers = [
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
-    "License :: OSI Approved :: MIT License",
 ]
 keywords = ["UseThatApp", "Python", "Web Apps"]
 dependencies = [
