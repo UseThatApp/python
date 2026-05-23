@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "usethatapp"
-version = "0.3.0"
-description = "For use in your UseThatApp Web Apps"
+version = "1.0.0"
+description = "Python SDK for usethatapp.com — verify launch envelopes and query user license tiers."
 readme = { file = "README.md", content-type = "text/markdown" }
 authors = [{ name = "UseThatApp", email = "support@usethatapp.com"}]
 license = "MIT"
@@ -14,18 +14,29 @@ classifiers = [
     "Programming Language :: Python",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3 :: Only",
-    "Programming Language :: Python :: 3.8",
     "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
 ]
-keywords = ["UseThatApp", "Python", "Web Apps"]
+keywords = ["UseThatApp", "Python", "Web Apps", "licensing", "SDK"]
 dependencies = [
-    "cryptography>=46.0.5,<47",
+    "cryptography>=42",
+    "httpx>=0.24",
 ]
-requires-python = ">=3.8"
+requires-python = ">=3.9"
+
+[project.optional-dependencies]
+django = ["Django>=3.2"]
+dev = [
+    "pytest>=7",
+    "pytest-asyncio>=0.21",
+    "pytest-cov>=4",
+    "respx>=0.20",
+    "mypy>=1.5",
+    "Django>=3.2",
+]
 
 [project.urls]
 Homepage = "https://github.com/UseThatApp/python"
@@ -38,4 +49,15 @@ include-package-data = true
 
 [tool.setuptools.packages.find]
 include = ["usethatapp*"]
+
+[tool.setuptools.package-data]
+usethatapp = ["py.typed"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
+[tool.mypy]
+strict = true
+files = ["usethatapp"]
 
