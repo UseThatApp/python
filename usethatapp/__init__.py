@@ -1,71 +1,65 @@
-"""Top-level public API for the ``usethatapp`` SDK (v1 webhook handoff).
+"""Top-level public API for the ``usethatapp`` SDK (v2, OIDC).
 
-Two functions:
+usethatapp.com is an OpenID Provider. This SDK is a framework-agnostic
+OIDC client: it helps you log a user in via the marketplace, identify them
+by a pairwise pseudonymous ``sub`` (no PII), and query their live license
+entitlement. It never touches your web framework — you read the callback
+params, store ``flow_state`` in your session, and issue redirects yourself.
 
-* :func:`get_user` — verify+decrypt the launch envelope POSTed by
-  usethatapp.com. Returns a :class:`UtaUser`. Framework-agnostic; takes
-  the raw payload. See :func:`get_user_from_request` /
-  :func:`get_user_from_request_async` for helpers that pull
-  ``uta_payload`` straight out of a Django/Flask/Starlette request.
-* :func:`get_version` — server-to-server pull of the user's current
-  license tier (signed POST to ``/licensing/getversion/``).
+Login flow::
 
-Plus a Django-only helper :func:`uta_launch_view` (gated import).
+    from usethatapp import begin_login, complete_login, get_entitlement
+
+    auth_url, flow_state = begin_login()          # save flow_state in session; redirect to auth_url
+    # ...browser returns to your redirect_uri with ?code=...&state=...
+    session = complete_login(code=code, state=state, flow_state=flow_state)
+    ent = get_entitlement(session.access_token)   # Entitlement(entitled=..., version=..., ...)
 """
 
 from __future__ import annotations
 
 from .client import (
-    clear_version_cache,
-    get_user,
-    get_user_from_request,
-    get_user_from_request_async,
-    get_version,
-    get_version_async,
+    begin_login,
+    complete_login,
+    get_entitlement,
+    get_entitlement_async,
+    logout_url,
+    refresh,
+    userinfo,
 )
 from .errors import (
-    UtaAppMismatchError,
-    UtaBadRequestError,
+    UtaAuthError,
     UtaConfigError,
+    UtaDiscoveryError,
     UtaError,
-    UtaPayloadExpiredError,
+    UtaPermissionError,
     UtaServerError,
-    UtaSessionRevokedError,
-    UtaSignatureError,
-    UtaUnknownSessionError,
+    UtaTokenError,
 )
-from .types import UtaUser
+from .types import Entitlement, UtaSession
 
-# Django helper — optional import. Only available when Django is installed.
-try:  # pragma: no cover - exercised in Django-equipped envs
-    import django  # noqa: F401
-
-    from .django_helpers import uta_launch_view  # noqa: F401
-except Exception:  # pragma: no cover
-    pass
-
-__version__ = "1.0.0"
+__version__ = "2.0.0"
 
 __all__ = [
     "__version__",
-    # functions
-    "get_user",
-    "get_user_from_request",
-    "get_user_from_request_async",
-    "get_version",
-    "get_version_async",
-    "clear_version_cache",
+    # login flow
+    "begin_login",
+    "complete_login",
+    "refresh",
+    "userinfo",
+    "logout_url",
+    # entitlement
+    "get_entitlement",
+    "get_entitlement_async",
     # types
-    "UtaUser",
+    "UtaSession",
+    "Entitlement",
     # errors
     "UtaError",
     "UtaConfigError",
-    "UtaSignatureError",
-    "UtaPayloadExpiredError",
-    "UtaAppMismatchError",
-    "UtaBadRequestError",
-    "UtaSessionRevokedError",
-    "UtaUnknownSessionError",
+    "UtaDiscoveryError",
+    "UtaAuthError",
+    "UtaTokenError",
+    "UtaPermissionError",
     "UtaServerError",
 ]
-

@@ -1,2 +1,2 @@
-cryptography>=42
 httpx>=0.24
+joserfc>=1.0

@@ -1,41 +1,79 @@
-"""Public dataclasses for the UseThatApp SDK."""
+"""Public dataclasses for the UseThatApp SDK (v2, OIDC).
+
+The v2 flow shares **only** a pairwise pseudonymous ``sub`` — no email,
+username, or other PII. ``sub`` is stable for a given user *within your
+app* but differs across apps, so it is safe to use as your local user key
+but cannot be correlated against other apps.
+"""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Optional
+from dataclasses import dataclass, field
+from typing import Any, Dict, Optional
 
 
 @dataclass(frozen=True)
-class UtaUser:
-    """An authenticated launch from usethatapp.com.
+class UtaSession:
+    """The result of a completed OIDC login.
 
-    The v1 launch envelope deliberately carries only an opaque
-    ``user_key`` — no email, username, or other PII. Persist
-    ``user_key`` against your own session and pass it to
-    :func:`usethatapp.get_version` whenever you need the user's
-    current license tier.
+    Persist ``sub`` as your local user identifier. Persist the tokens
+    (against your own server-side session) to call
+    :func:`usethatapp.get_entitlement` and to refresh later.
     """
 
-    user_key: str
-    """Opaque identifier for the user/license. Persist; pass to ``get_version()``."""
+    sub: str
+    """Pairwise pseudonymous user id. Stable per-app; use as your user key."""
 
-    app_id: str
-    """Echoed app id; equals ``UTA_APP_ID``."""
-
-    issued_at: int
-    """Unix seconds — ``iat`` from the envelope."""
+    access_token: str
+    """Bearer token for :func:`usethatapp.get_entitlement`."""
 
     expires_at: int
-    """Unix seconds — ``exp`` from the envelope."""
+    """Unix seconds at which ``access_token`` expires."""
 
-    version_hint: Optional[str] = None
-    """Non-authoritative product name; for first paint only.
+    refresh_token: Optional[str] = None
+    """Use with :func:`usethatapp.refresh` to obtain a fresh session."""
 
-    The contract is: developers MAY use this for first paint but MUST
-    call :func:`usethatapp.get_version` for the real, current value.
+    id_token: Optional[str] = None
+    """Raw OIDC ID token (JWT). Pass to :func:`usethatapp.logout_url`."""
+
+    scope: str = ""
+    """Space-separated granted scopes."""
+
+    token_type: str = "Bearer"
+
+    claims: Dict[str, Any] = field(default_factory=dict)
+    """Validated ID-token claims (``sub`` plus standard OIDC claims)."""
+
+
+@dataclass(frozen=True)
+class Entitlement:
+    """A user's live license state for your app.
+
+    Always reflects the current license on usethatapp.com, so re-query
+    whenever you need an authoritative answer (it is cheap and cacheable
+    on your side if you wish).
     """
 
+    entitled: bool
+    """True if the user may use the app (an active license or a free tier)."""
 
-__all__ = ["UtaUser"]
+    version: Optional[str]
+    """Product/plan display name, or ``None`` when not entitled."""
 
+    product_id: Optional[str]
+    """Stable product UUID — prefer this over ``version`` for gating logic."""
+
+    status: str
+    """``active``/``trialing``/``one_time_active``/``free``/``none``/…"""
+
+    is_free: bool
+    """True when the entitlement comes from the app's free tier."""
+
+    period_end: Optional[str] = None
+    """ISO date the current license period ends, or ``None``."""
+
+    raw: Dict[str, Any] = field(default_factory=dict)
+    """The full decoded response, for forward-compatibility."""
+
+
+__all__ = ["UtaSession", "Entitlement"]

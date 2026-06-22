@@ -1,8 +1,7 @@
-"""Exception hierarchy for the UseThatApp SDK.
+"""Exception hierarchy for the UseThatApp SDK (v2, OIDC).
 
 Every error raised out of the public API inherits from :class:`UtaError`.
-Callers should catch :class:`UtaError` (or a specific subclass) and never
-``Exception``/``ValueError``.
+Catch :class:`UtaError` (or a specific subclass) — never ``Exception``.
 """
 
 from __future__ import annotations
@@ -13,50 +12,48 @@ class UtaError(Exception):
 
 
 class UtaConfigError(UtaError):
-    """Raised when SDK configuration is missing or invalid."""
+    """SDK configuration is missing or invalid."""
 
 
-# ── Local validation errors (raised by get_user_from_request / payload parsing) ──
-
-class UtaSignatureError(UtaError):
-    """Signature verification failed (local verify or server returned 401)."""
+class UtaDiscoveryError(UtaError):
+    """OIDC discovery document or JWKS could not be fetched/parsed."""
 
 
-class UtaPayloadExpiredError(UtaError):
-    """The launch envelope's ``exp`` is in the past (beyond clock-skew)."""
+class UtaAuthError(UtaError):
+    """The authorization step failed.
+
+    Raised for a ``state`` mismatch, a provider ``error`` response, or a
+    user-denied authorization. Treat as "login did not succeed".
+    """
 
 
-class UtaAppMismatchError(UtaError):
-    """The envelope's ``app_id`` does not match ``UTA_APP_ID``."""
+class UtaTokenError(UtaError):
+    """A token could not be obtained or validated.
+
+    Covers token-endpoint failures (code exchange / refresh) and ID-token
+    validation failures (bad signature, issuer, audience, expiry, or
+    nonce). Also raised when the entitlement endpoint returns 401 (the
+    access token is invalid or expired).
+    """
 
 
-# ── Errors mapped from get_version HTTP responses ──
-
-class UtaBadRequestError(UtaError):
-    """Server returned 400 — malformed body, ts outside window, replay, etc."""
-
-
-class UtaSessionRevokedError(UtaError):
-    """Server returned 403 — the user's session was revoked. Log them out."""
-
-
-class UtaUnknownSessionError(UtaError):
-    """Server returned 404 — unknown ``user_key`` or ``app_id``."""
+class UtaPermissionError(UtaError):
+    """The token is valid but lacks the required scope (entitlement 403)."""
 
 
 class UtaServerError(UtaError):
-    """Server returned 5xx. Callers MAY retry with backoff."""
+    """A usethatapp.com endpoint returned 5xx, or the network failed.
+
+    Callers MAY retry with backoff.
+    """
 
 
 __all__ = [
     "UtaError",
     "UtaConfigError",
-    "UtaSignatureError",
-    "UtaPayloadExpiredError",
-    "UtaAppMismatchError",
-    "UtaBadRequestError",
-    "UtaSessionRevokedError",
-    "UtaUnknownSessionError",
+    "UtaDiscoveryError",
+    "UtaAuthError",
+    "UtaTokenError",
+    "UtaPermissionError",
     "UtaServerError",
 ]
-

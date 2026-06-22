@@ -1,12 +1,13 @@
-"""Minimal Django app demonstrating the UseThatApp launch + license flow.
+"""Minimal Django app demonstrating the UseThatApp OIDC login + entitlement flow.
+
+Docs only — the SDK ships no Django-specific code. This shows the three
+framework-specific bits you wire yourself: read callback params, store
+``flow_state`` in the session, issue redirects.
 
 Run:
     pip install usethatapp django
-    # Generate a throwaway developer keypair and set UTA_APP_ID
-    python manage.py runserver
-
-Then POST a hand-crafted envelope (see scripts/handcraft_payload.py in
-the tests/ directory of the SDK repo) to /uta/launch/.
+    export UTA_CLIENT_ID=... UTA_CLIENT_SECRET=... UTA_REDIRECT_URI=http://localhost:8000/callback/
+    python app.py runserver
 """
 from __future__ import annotations
 
@@ -14,56 +15,75 @@ import os
 
 from django.conf import settings
 from django.http import HttpResponse, JsonResponse
+from django.shortcuts import redirect
 from django.urls import path
 
-from usethatapp import UtaUser, get_version, uta_launch_view
+from usethatapp import (
+    UtaError,
+    begin_login,
+    complete_login,
+    get_entitlement,
+    logout_url,
+)
 
-
-# ── settings ─────────────────────────────────────────────────────────
 if not settings.configured:
     settings.configure(
         DEBUG=True,
         SECRET_KEY=os.environ.get("DJANGO_SECRET_KEY", "dev-only"),
         ALLOWED_HOSTS=["*"],
         ROOT_URLCONF=__name__,
-        DATABASES={},
-        INSTALLED_APPS=[],
-        MIDDLEWARE=[],
-        UTA_APP_ID=os.environ["UTA_APP_ID"],
-        UTA_PRIVATE_KEY=os.environ["UTA_PRIVATE_KEY"],
-        UTA_MARKET_PUBLIC_KEY=os.environ["UTA_MARKET_PUBLIC_KEY"],
+        # signed-cookie sessions keep this example DB-free.
+        SESSION_ENGINE="django.contrib.sessions.backends.signed_cookies",
+        INSTALLED_APPS=["django.contrib.sessions"],
+        MIDDLEWARE=["django.contrib.sessions.middleware.SessionMiddleware"],
     )
 
 
-# ── views ────────────────────────────────────────────────────────────
-@uta_launch_view
-def launch(request, uta_user: UtaUser):
-    # In a real app you'd persist user_key into your own session.
+def login(request):
+    auth_url, flow_state = begin_login()
+    request.session["uta_flow"] = flow_state          # stash for the callback
+    return redirect(auth_url)
+
+
+def callback(request):
     try:
-        version = get_version(uta_user.user_key)
-    except Exception as e:  # pragma: no cover
-        version = f"<error: {e}>"
-    return JsonResponse({
-        "user_key": uta_user.user_key,
-        "app_id": uta_user.app_id,
-        "version_hint": uta_user.version_hint,
-        "version": version,
-    })
+        session = complete_login(
+            code=request.GET.get("code"),
+            state=request.GET.get("state"),
+            flow_state=request.session.pop("uta_flow", {}),
+        )
+    except UtaError as e:
+        return HttpResponse(f"login failed: {e}", status=400)
+    # Persist what you need against your own session.
+    request.session["uta_sub"] = session.sub
+    request.session["uta_access_token"] = session.access_token
+    request.session["uta_id_token"] = session.id_token
+    return redirect("home")
 
 
-def index(request):
-    return HttpResponse("usethatapp django_min example. POST to /uta/launch/.")
+def home(request):
+    token = request.session.get("uta_access_token")
+    if not token:
+        return HttpResponse('<a href="/login/">Log in with UseThatApp</a>')
+    ent = get_entitlement(token)
+    return JsonResponse({"sub": request.session.get("uta_sub"), "entitlement": ent.raw})
+
+
+def logout(request):
+    id_token = request.session.get("uta_id_token")
+    request.session.flush()
+    return redirect(logout_url(id_token=id_token, post_logout_redirect_uri="http://localhost:8000/"))
 
 
 urlpatterns = [
-    path("", index),
-    path("uta/launch/", launch, name="uta-launch"),
+    path("", home, name="home"),
+    path("login/", login, name="login"),
+    path("callback/", callback, name="callback"),
+    path("logout/", logout, name="logout"),
 ]
 
 
-# ── manage.py-style entrypoint ───────────────────────────────────────
 if __name__ == "__main__":  # pragma: no cover
     import sys
     from django.core.management import execute_from_command_line
     execute_from_command_line(sys.argv)
-

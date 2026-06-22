@@ -1,107 +1,91 @@
-"""Shared fixtures for the SDK test suite."""
+"""Shared fixtures for the v2 (OIDC) SDK test suite."""
 from __future__ import annotations
 
-import importlib.util
-import os
-import secrets
-import sys
-from pathlib import Path
-from types import ModuleType
+import time
 
+import httpx
 import pytest
-from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.primitives.asymmetric import rsa
+from joserfc import jwt
+from joserfc.jwk import RSAKey
 
 from usethatapp import config as uta_config
-from usethatapp.client import clear_version_cache
+from usethatapp import discovery as uta_discovery
 
+ISSUER = "https://oidc.test.example/o"
+API_URL = "https://api.test.example"
+CLIENT_ID = "client-test-123"
+CLIENT_SECRET = "secret-xyz"
+REDIRECT_URI = "https://app.test.example/callback"
+KID = "test-key-1"
 
-def _gen_key() -> rsa.RSAPrivateKey:
-    return rsa.generate_private_key(public_exponent=65537, key_size=2048)
-
-
-def _pem(priv: rsa.RSAPrivateKey) -> str:
-    return priv.private_bytes(
-        encoding=serialization.Encoding.PEM,
-        format=serialization.PrivateFormat.PKCS8,
-        encryption_algorithm=serialization.NoEncryption(),
-    ).decode("ascii")
-
-
-def _pub_pem(priv: rsa.RSAPrivateKey) -> str:
-    return priv.public_key().public_bytes(
-        encoding=serialization.Encoding.PEM,
-        format=serialization.PublicFormat.SubjectPublicKeyInfo,
-    ).decode("ascii")
+METADATA = {
+    "issuer": ISSUER,
+    "authorization_endpoint": ISSUER + "/authorize/",
+    "token_endpoint": ISSUER + "/token/",
+    "jwks_uri": ISSUER + "/.well-known/jwks.json",
+    "userinfo_endpoint": ISSUER + "/userinfo/",
+    "end_session_endpoint": ISSUER + "/logout/",
+}
 
 
 @pytest.fixture(scope="session")
-def market_keypair() -> rsa.RSAPrivateKey:
-    return _gen_key()
+def signing_key() -> RSAKey:
+    return RSAKey.generate_key(2048, parameters={"kid": KID}, private=True)
 
 
 @pytest.fixture(scope="session")
-def developer_keypair() -> rsa.RSAPrivateKey:
-    return _gen_key()
+def jwks_dict(signing_key) -> dict:
+    return {"keys": [signing_key.as_dict(private=False)]}
 
 
 @pytest.fixture
-def app_id() -> str:
-    return "11111111-2222-3333-4444-555555555555"
+def make_id_token(signing_key):
+    """Factory: mint a signed ID token, overriding any claim."""
 
-
-@pytest.fixture(autouse=True)
-def configure_env(monkeypatch, app_id, developer_keypair, market_keypair):
-    """Configure SDK via env vars and reset caches for each test."""
-    monkeypatch.setenv("UTA_APP_ID", app_id)
-    monkeypatch.setenv("UTA_PRIVATE_KEY", _pem(developer_keypair))
-    monkeypatch.setenv("UTA_MARKET_PUBLIC_KEY", _pub_pem(market_keypair))
-    monkeypatch.setenv("UTA_API_URL", "https://test.usethatapp.example")
-    monkeypatch.setenv("UTA_CLOCK_SKEW_SECONDS", "60")
-    monkeypatch.setenv("UTA_REQUEST_TIMEOUT_SECONDS", "5")
-    uta_config.reset_cache()
-    clear_version_cache()
-    yield
-    uta_config.reset_cache()
-    clear_version_cache()
-
-
-@pytest.fixture
-def make_envelope(developer_keypair, market_keypair, app_id):
-    """Factory: builds a launch envelope using the test keypairs."""
-    from usethatapp.payloads import build_payload
-
-    def _make(**overrides):
-        kwargs = dict(
-            user_key=overrides.pop("user_key", "opaque-user-key-xyz"),
-            app_id=overrides.pop("app_id", app_id),
-            developer_public_key=developer_keypair.public_key(),
-            market_private_key=market_keypair,
-        )
-        kwargs.update(overrides)
-        return build_payload(**kwargs)
+    def _make(**overrides) -> str:
+        now = int(time.time())
+        claims = {
+            "iss": ISSUER,
+            "aud": CLIENT_ID,
+            "sub": "pairwise-sub-abc",
+            "iat": now,
+            "exp": now + 3600,
+            "nonce": "test-nonce",
+        }
+        claims.update(overrides)
+        header = {"alg": "RS256", "kid": overrides.pop("kid", KID)}
+        return jwt.encode(header, claims, signing_key)
 
     return _make
 
 
-# ──────────────────────────────────────────────────────────────────────
-# Example-app loader (used by tests/test_example_*.py)
-# ──────────────────────────────────────────────────────────────────────
-
-EXAMPLES_ROOT = Path(__file__).parent.parent / "examples"
+@pytest.fixture(autouse=True)
+def configure_env(monkeypatch):
+    """Configure the SDK via env vars; reset caches around each test."""
+    monkeypatch.setenv("UTA_CLIENT_ID", CLIENT_ID)
+    monkeypatch.setenv("UTA_CLIENT_SECRET", CLIENT_SECRET)
+    monkeypatch.setenv("UTA_REDIRECT_URI", REDIRECT_URI)
+    monkeypatch.setenv("UTA_ISSUER", ISSUER)
+    monkeypatch.setenv("UTA_API_URL", API_URL)
+    monkeypatch.setenv("UTA_REQUEST_TIMEOUT_SECONDS", "5")
+    monkeypatch.setenv("UTA_CLOCK_SKEW_SECONDS", "60")
+    # Drop any inherited secret-path var so tests are hermetic.
+    monkeypatch.delenv("UTA_CLIENT_SECRET_PATH", raising=False)
+    uta_config.reset_cache()
+    uta_discovery.reset_cache()
+    yield
+    uta_config.reset_cache()
+    uta_discovery.reset_cache()
 
 
 @pytest.fixture
-def load_example():
-    """Factory fixture: import an example's ``app.py`` as a fresh module."""
-
-    def _load(folder: str, module_name: str) -> ModuleType:
-        path = EXAMPLES_ROOT / folder / "app.py"
-        spec = importlib.util.spec_from_file_location(module_name, path)
-        assert spec and spec.loader
-        module = importlib.util.module_from_spec(spec)
-        sys.modules[module_name] = module
-        spec.loader.exec_module(module)
-        return module
-
-    return _load
+def oidc_routes(respx_mock, jwks_dict):
+    """Mock the discovery + JWKS endpoints; return the respx router so a
+    test can add token/entitlement/userinfo routes."""
+    respx_mock.get(ISSUER + "/.well-known/openid-configuration").mock(
+        return_value=httpx.Response(200, json=METADATA)
+    )
+    respx_mock.get(METADATA["jwks_uri"]).mock(
+        return_value=httpx.Response(200, json=jwks_dict)
+    )
+    return respx_mock

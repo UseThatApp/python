@@ -4,6 +4,50 @@ All notable changes to this project are documented in this file. This project ad
 [Semantic Versioning](https://semver.org/) and follows a clear, machine- and human-readable
 format inspired by "Keep a Changelog".
 
+## [2.0.0] - 2026-06-21
+
+Breaking rewrite onto standard OAuth2 / OpenID Connect. usethatapp.com is
+now an OpenID Provider; the SDK is a framework-agnostic OIDC client. The
+v1 launch-envelope push + signed `get_version` pull are gone.
+
+### Removed
+
+- `get_user` / `get_user_from_request` / `get_user_from_request_async` and
+  the encrypted launch-envelope handling (`usethatapp.payloads`).
+- `get_version` / `get_version_async` and the process-local version cache.
+- `uta_launch_view` Django decorator and `usethatapp.django_helpers` — the
+  SDK no longer ships any framework-specific code.
+- `UtaUser` (and its `user_key` / `version_hint`).
+- RSA-key configuration (`UTA_PRIVATE_KEY[_PATH]`,
+  `UTA_MARKET_PUBLIC_KEY[_PATH]`) and `UTA_APP_ID`.
+- The bundled `cryptography` dependency (now pulled transitively by
+  `joserfc`).
+
+### Added
+
+- OIDC login flow:
+  - `begin_login()` → `(authorization_url, flow_state)` (authorization
+    code + PKCE; `flow_state` is a JSON-able dict you stash in the session).
+  - `complete_login(code=, state=, flow_state=)` → `UtaSession`, validating
+    `state`, exchanging the code, and verifying the ID token (signature via
+    JWKS, `iss`/`aud`/`exp`/`nonce`).
+  - `refresh(refresh_token)`, `userinfo(access_token)`, `logout_url(...)`.
+- `get_entitlement(access_token)` / `get_entitlement_async(...)` →
+  `Entitlement(entitled, version, product_id, status, is_free, period_end)`,
+  the Bearer-token replacement for `get_version`.
+- `UtaSession` (carries the pairwise pseudonymous `sub` + tokens) and
+  `Entitlement` dataclasses.
+- New config: `UTA_CLIENT_ID`, `UTA_CLIENT_SECRET[_PATH]`,
+  `UTA_REDIRECT_URI`, `UTA_ISSUER`, `UTA_SCOPES`.
+- New typed errors: `UtaDiscoveryError`, `UtaAuthError`, `UtaTokenError`,
+  `UtaPermissionError` (replacing the v1 envelope/session error set).
+
+### Changed
+
+- Runtime dependencies are now `httpx` + `joserfc`.
+- Identity is a pairwise, per-app pseudonymous `sub` — stable within your
+  app, uncorrelatable across apps. Key your user records off `sub`.
+
 ## [1.0.0] - 2026-05-21
 
 Breaking rewrite for the new usethatapp.com webhook-based handoff. The browser
