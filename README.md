@@ -84,7 +84,10 @@ auth_url, flow_state = begin_login()
 save_to_session("uta_flow", flow_state)        # JSON-able dict
 return redirect(auth_url)
 
-# 2) In your callback (reads ?code=...&state=... off the request):
+# 2) In your callback (reads ?code=...&state=... off the request).
+#    On cancel/deny the provider sends ?error=... and no code — handle it first:
+if read_query("error"):
+    return redirect("/")   # login was canceled
 session = complete_login(
     code=read_query("code"),
     state=read_query("state"),

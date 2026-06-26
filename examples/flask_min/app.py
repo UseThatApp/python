@@ -27,6 +27,10 @@ def login():
 
 @app.route("/callback")
 def callback():
+    # On cancel/deny, OAuth redirects back with ?error=... and no code.
+    if request.args.get("error"):
+        session.pop("uta_flow", None)
+        return redirect(url_for("home"))
     try:
         s = complete_login(
             code=request.args.get("code"),

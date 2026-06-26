@@ -40,7 +40,9 @@ auth_url, flow_state = begin_login()        # 1. start
 save_to_session("uta_flow", flow_state)     # 2. stash
 redirect(auth_url)                          # 3. redirect
 
-# ...callback (request has ?code=&state=)...
+# ...callback (request has ?code=&state=, or ?error= on cancel/deny)...
+if read_query("error"):
+    redirect("/")                           # login was canceled
 session = complete_login(
     code=read_query("code"),
     state=read_query("state"),

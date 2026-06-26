@@ -46,6 +46,10 @@ def login(request):
 
 
 def callback(request):
+    # On cancel/deny, OAuth redirects back with ?error=... and no code.
+    if request.GET.get("error"):
+        request.session.pop("uta_flow", None)
+        return redirect("home")
     try:
         session = complete_login(
             code=request.GET.get("code"),
