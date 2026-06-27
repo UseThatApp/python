@@ -18,6 +18,7 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from usethatapp import (
     UtaError,
+    UtaTokenError,
     begin_login,
     complete_login,
     get_entitlement_async,
@@ -56,16 +57,23 @@ def callback(request: Request, code: str = "", state: str = "", error: str = "")
 @app.get("/")
 async def home(request: Request):
     token = request.session.get("uta_access_token")
-    if not token:
-        return HTMLResponse('<a href="/login">Log in with UseThatApp</a>')
-    ent = await get_entitlement_async(token)
-    return {"sub": request.session.get("uta_sub"), "entitlement": ent.raw}
+    if token:
+        try:
+            ent = await get_entitlement_async(token)
+            return {"sub": request.session.get("uta_sub"), "entitlement": ent.raw}
+        except UtaTokenError:
+            # Token revoked/expired (signed out of UseThatApp). Reconcile.
+            for k in ("uta_access_token", "uta_sub", "uta_id_token"):
+                request.session.pop(k, None)
+    return HTMLResponse('<a href="/login">Log in with UseThatApp</a>')
 
 
 @app.get("/logout")
 def logout(request: Request):
+    # Don't clear the session yet — the user may choose "Stay signed in". A
+    # real logout revokes the token, so the next get_entitlement (home) 401s
+    # and we drop it then.
     id_token = request.session.get("uta_id_token")
-    request.session.clear()
     return RedirectResponse(
         logout_url(id_token=id_token, post_logout_redirect_uri="http://localhost:8000/")
     )

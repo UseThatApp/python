@@ -20,6 +20,7 @@ from django.urls import path
 
 from usethatapp import (
     UtaError,
+    UtaTokenError,
     begin_login,
     complete_login,
     get_entitlement,
@@ -67,15 +68,23 @@ def callback(request):
 
 def home(request):
     token = request.session.get("uta_access_token")
-    if not token:
-        return HttpResponse('<a href="/login/">Log in with UseThatApp</a>')
-    ent = get_entitlement(token)
-    return JsonResponse({"sub": request.session.get("uta_sub"), "entitlement": ent.raw})
+    if token:
+        try:
+            ent = get_entitlement(token)
+            return JsonResponse({"sub": request.session.get("uta_sub"), "entitlement": ent.raw})
+        except UtaTokenError:
+            # Token revoked/expired (e.g. signed out of UseThatApp). Reconcile
+            # by dropping it; fall through to the logged-out view.
+            for k in ("uta_access_token", "uta_sub", "uta_id_token"):
+                request.session.pop(k, None)
+    return HttpResponse('<a href="/login/">Log in with UseThatApp</a>')
 
 
 def logout(request):
+    # Don't clear the session yet — the user may choose "Stay signed in" at
+    # UseThatApp. Reconcile on return: a real logout revokes the token, so the
+    # next get_entitlement (in home) returns 401 and we drop it then.
     id_token = request.session.get("uta_id_token")
-    request.session.flush()
     return redirect(logout_url(id_token=id_token, post_logout_redirect_uri="http://localhost:8000/"))
 
 

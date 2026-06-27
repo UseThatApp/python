@@ -118,6 +118,19 @@ are documentation only — nothing framework-specific ships in the package.
 
 All inherit from `UtaError` — catch that for a single `except` clause.
 
+## Signing out
+
+Sign-out is RP-initiated: redirect the user to `logout_url(id_token=…)`. Both
+outcomes — they confirm, or they choose "Stay signed in" — return to your
+`post_logout_redirect_uri`, so you **can't** tell which happened from the
+redirect alone.
+
+So **don't clear your session when you start logout.** Reconcile on return
+using the token instead: a confirmed logout revokes it, so your next
+`get_entitlement()` raises `UtaTokenError` (401) — drop the token then. If they
+stayed signed in, the token is still valid and they keep their session.
+Clearing eagerly logs the user out of your app even when they chose to stay.
+
 ## Migrating from v1
 
 | v1                                      | v2                                              |

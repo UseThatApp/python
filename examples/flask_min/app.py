@@ -12,7 +12,14 @@ import os
 
 from flask import Flask, redirect, request, session, url_for
 
-from usethatapp import UtaError, begin_login, complete_login, get_entitlement, logout_url
+from usethatapp import (
+    UtaError,
+    UtaTokenError,
+    begin_login,
+    complete_login,
+    get_entitlement,
+    logout_url,
+)
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("FLASK_SECRET_KEY", "dev-only")
@@ -48,16 +55,23 @@ def callback():
 @app.route("/")
 def home():
     token = session.get("uta_access_token")
-    if not token:
-        return '<a href="/login">Log in with UseThatApp</a>'
-    ent = get_entitlement(token)
-    return {"sub": session.get("uta_sub"), "entitlement": ent.raw}
+    if token:
+        try:
+            ent = get_entitlement(token)
+            return {"sub": session.get("uta_sub"), "entitlement": ent.raw}
+        except UtaTokenError:
+            # Token revoked/expired (signed out of UseThatApp). Reconcile.
+            for k in ("uta_access_token", "uta_sub", "uta_id_token"):
+                session.pop(k, None)
+    return '<a href="/login">Log in with UseThatApp</a>'
 
 
 @app.route("/logout")
 def logout():
+    # Don't clear the session yet — the user may choose "Stay signed in". A
+    # real logout revokes the token, so the next get_entitlement (home) 401s
+    # and we drop it then.
     id_token = session.get("uta_id_token")
-    session.clear()
     return redirect(logout_url(id_token=id_token, post_logout_redirect_uri="http://localhost:5000/"))
 
 
