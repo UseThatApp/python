@@ -1,31 +1,34 @@
 # usethatapp
 
-Python SDK for [usethatapp.com](https://usethatapp.com). Verifies the
-encrypted+signed *launch envelope* the marketplace POSTs to your app
-and lets you pull the user's current license tier on demand.
+Python SDK for [usethatapp.com](https://usethatapp.com). usethatapp.com is
+an **OpenID Connect provider**: this SDK logs a user in through the
+marketplace, identifies them by a privacy-preserving `sub`, and tells you
+their **live license entitlement** for your app.
 
-**Framework-agnostic.** Use with Django, Flask, FastAPI, Starlette,
-Dash, Streamlit, Pyramid, Bottle, AIOHTTP, plain WSGI, or a CLI. The
-only runtime dependencies are `cryptography` and `httpx`. A Django
-helper is shipped, but only imported when Django is installed.
+**Framework-agnostic.** The SDK never touches your web framework — it
+takes and returns plain strings and one JSON-able `flow_state` dict. You
+wire the three framework-specific bits yourself (read the callback query
+params, store `flow_state` in your session, issue the redirect). Works
+with Django, Flask, FastAPI, Starlette, Dash, Streamlit, plain WSGI, a
+CLI — anything. Runtime deps: `httpx`, `joserfc`.
 
-> **v1.0 is a breaking rewrite.** The old browser-side
-> `usethatapp.js` / `requestAccessLevel()` / iframe handshake has been
-> removed. See [CHANGELOG.md](./CHANGELOG.md) for migration notes.
+> **v2.0 is a breaking rewrite.** The v1 launch-envelope / `user_key` /
+> `get_version` handoff is replaced by standard OAuth2/OIDC. See
+> [CHANGELOG.md](./CHANGELOG.md) and *Migrating from v1* below.
 
 ## How it works
 
-usethatapp.com uses a two-phase, license-centric handoff:
+1. **Login (redirect).** Start a login with `begin_login()`, send the user
+   to usethatapp.com to authenticate, and finish in your callback with
+   `complete_login()`. You get a `UtaSession` carrying the user's `sub`
+   (a stable, **per-app**, pseudonymous id — no PII) and OAuth tokens.
+2. **Entitlement (Bearer query).** Call `get_entitlement(access_token)`
+   whenever you need the user's current license. It's always
+   authoritative — a canceled license stops being entitled immediately.
 
-1. **Launch (one-way push).** When a user clicks *Launch app* on
-   usethatapp.com, the marketplace POSTs an encrypted+signed envelope
-   to your app's URL. The envelope carries an opaque `user_key`. Your
-   app verifies + decrypts it, persists `user_key` against its own
-   session, and renders your UI.
-2. **Query (server-to-server pull).** Whenever your app needs the
-   user's current license tier, it POSTs a signed request to
-   `https://usethatapp.com/licensing/getversion/` with the `user_key`
-   and gets back the live product name (or `null`).
+`sub` is **pairwise**: stable for a user within *your* app, but different
+in every other app, so it can't be correlated across apps. Use it as your
+local user key — and key off `sub`, never an email (we never share one).
 
 ## Install
 
@@ -33,105 +36,115 @@ usethatapp.com uses a two-phase, license-centric handoff:
 pip install usethatapp
 ```
 
-Requires Python 3.9+. Runtime deps: `cryptography`, `httpx`. No web
-framework required.
+Python 3.9+. Runtime deps: `httpx`, `joserfc`. No web framework required.
 
 ## Settings
 
-The SDK reads from `django.conf.settings` **only if** Django is
-installed and configured; otherwise it falls back to environment
-variables. Non-Django users just `export` these:
+Read from `django.conf.settings` if Django is installed and configured,
+otherwise from environment variables.
 
-| Name                          | Required | Purpose                                                                                   |
-|-------------------------------|----------|-------------------------------------------------------------------------------------------|
-| `UTA_APP_ID`                  | yes      | Your app's UUID on usethatapp.com.                                                        |
-| `UTA_PRIVATE_KEY`             | yes†     | Your RSA-2048 private key (PEM string or `RSAPrivateKey` object).                         |
-| `UTA_PRIVATE_KEY_PATH`        | yes†     | Filesystem path to a PEM file containing the private key. †Set this *or* `UTA_PRIVATE_KEY`.|
-| `UTA_MARKET_PUBLIC_KEY`       | yes*     | Marketplace public key (PEM string or `RSAPublicKey`). *A production default is bundled.  |
-| `UTA_MARKET_PUBLIC_KEY_PATH`  | no       | Filesystem path to a PEM file containing the marketplace public key (alternative to `UTA_MARKET_PUBLIC_KEY`). |
-| `UTA_API_URL`                 | no       | Defaults to `https://usethatapp.com`.                                                     |
-| `UTA_CLOCK_SKEW_SECONDS`      | no       | Defaults to `60`.                                                                         |
-| `UTA_REQUEST_TIMEOUT_SECONDS` | no       | Defaults to `10`.                                                                         |
-
-The `*_PATH` variants are intended for hosting providers that mount
-secret files into the container (Render Secret Files, Fly.io volumes,
-Kubernetes secret volumes, GCP Secret Manager volume mounts, etc.).
-The SDK reads the file at boot. If both the direct setting and the
-path setting are provided for the same key, the direct value wins.
+| Name                          | Required | Purpose                                                        |
+|-------------------------------|----------|----------------------------------------------------------------|
+| `UTA_CLIENT_ID`               | yes      | Your app's OAuth client id (from the usethatapp.com dashboard).|
+| `UTA_REDIRECT_URI`            | yes      | Your registered callback URL.                                  |
+| `UTA_CLIENT_SECRET`           | yes*     | Client secret. *Omit for a public (browser/native) PKCE client.|
+| `UTA_CLIENT_SECRET_PATH`      | no       | Read the secret from a mounted file instead (Render/k8s/Fly).  |
+| `UTA_ISSUER`                  | no       | Defaults to `https://www.usethatapp.com/o`.                    |
+| `UTA_API_URL`                 | no       | Defaults to `https://www.usethatapp.com`.                      |
+| `UTA_SCOPES`                  | no       | Defaults to `openid entitlements`.                             |
+| `UTA_CLOCK_SKEW_SECONDS`      | no       | ID-token validation leeway. Defaults to `60`.                  |
+| `UTA_REQUEST_TIMEOUT_SECONDS` | no       | Defaults to `10`.                                              |
 
 ## Public API
 
-Three functions cover every integration:
-
 ```python
 from usethatapp import (
-    get_user,                       # framework-agnostic: takes the raw uta_payload str/dict
-    get_user_from_request,          # auto-detects Django / Flask / Werkzeug requests
-    get_user_from_request_async,    # for Starlette / FastAPI (await)
-    get_version,                    # signed server-to-server license-tier lookup
-    get_version_async,              # async variant
-    UtaUser,                        # frozen dataclass: user_key, app_id, iat, exp, version_hint
-    # typed errors:
-    UtaError, UtaSignatureError, UtaPayloadExpiredError,
-    UtaAppMismatchError, UtaBadRequestError, UtaSessionRevokedError,
-    UtaUnknownSessionError, UtaServerError, UtaConfigError,
-    # Django-only (imported lazily — present only if Django is installed):
-    uta_launch_view,
+    begin_login,        # -> (authorization_url, flow_state)
+    complete_login,     # (code=, state=, flow_state=) -> UtaSession
+    get_entitlement,    # (access_token) -> Entitlement
+    get_entitlement_async,
+    refresh,            # (refresh_token) -> UtaSession
+    userinfo,           # (access_token) -> {"sub": ...}
+    logout_url,         # (id_token=, post_logout_redirect_uri=) -> str
+    UtaSession,         # sub, access_token, refresh_token, id_token, expires_at, ...
+    Entitlement,        # entitled, version, product_id, status, is_free, period_end
+    # errors:
+    UtaError, UtaConfigError, UtaDiscoveryError, UtaAuthError,
+    UtaTokenError, UtaPermissionError, UtaServerError,
 )
 ```
-
-`UtaUser` carries only the opaque `user_key` — no PII. Persist it
-against your own session; pass it to `get_version` whenever you need
-the live license tier.
 
 ## Quickstart — any framework
 
 ```python
-from usethatapp import get_user, get_version, UtaError
+from usethatapp import begin_login, complete_login, get_entitlement
 
-# In your POST handler — however your framework spells it:
-raw_payload = read_form_field("uta_payload")  # str
-try:
-    uta_user = get_user(raw_payload)
-except UtaError as e:
-    return bad_request(str(e))
+# 1) Start login — however your framework spells "redirect":
+auth_url, flow_state = begin_login()
+save_to_session("uta_flow", flow_state)        # JSON-able dict
+return redirect(auth_url)
 
-save_to_session("uta_user_key", uta_user.user_key)
+# 2) In your callback (reads ?code=...&state=... off the request).
+#    On cancel/deny the provider sends ?error=... and no code — handle it first:
+if read_query("error"):
+    return redirect("/")   # login was canceled
+session = complete_login(
+    code=read_query("code"),
+    state=read_query("state"),
+    flow_state=load_from_session("uta_flow"),
+)
+save_to_session("uta_sub", session.sub)
+save_to_session("uta_access_token", session.access_token)
 
-# Later, anywhere in your app:
-version = get_version(load_from_session("uta_user_key"))  # str | None
+# 3) Anywhere you gate features:
+ent = get_entitlement(load_from_session("uta_access_token"))
+if ent.entitled and ent.product_id == "...":
+    ...
 ```
 
-## Framework examples
-
-Runnable single-file examples for each major framework live under
-[`examples/`](./examples/):
-
-- [`examples/django_min/`](./examples/django_min/) — `@uta_launch_view`
-- [`examples/flask_min/`](./examples/flask_min/) — `get_user_from_request(request)`
-- [`examples/fastapi_min/`](./examples/fastapi_min/) — `await get_user_from_request_async(request)`
-- [`examples/dash_min/`](./examples/dash_min/) — Flask route on Dash's underlying server
-- [`examples/streamlit_min/`](./examples/streamlit_min/) — sidecar pattern + `get_user`
-
-> `uta_user.version_hint` is **not** the source of truth. Use it only
-> for first paint. The authoritative value comes from
-> `get_version(user_key)`.
+Runnable per-framework demos live under [`examples/`](./examples/). They
+are documentation only — nothing framework-specific ships in the package.
 
 ## Error mapping
 
-`get_version` maps server status codes to typed exceptions:
+`get_entitlement` maps status codes to typed exceptions:
 
-| Status | Exception                | Meaning                                |
-|--------|--------------------------|----------------------------------------|
-| 400    | `UtaBadRequestError`     | Bad JSON / ts outside window / replay. |
-| 401    | `UtaSignatureError`      | Signature verification failed.         |
-| 403    | `UtaSessionRevokedError` | Treat as "user logged out".            |
-| 404    | `UtaUnknownSessionError` | Unknown `user_key` or `app_id`.        |
-| 5xx    | `UtaServerError`         | Retriable with backoff.                |
+| Status | Exception            | Meaning                                       |
+|--------|----------------------|-----------------------------------------------|
+| 401    | `UtaTokenError`      | Access token invalid/expired — re-auth/refresh.|
+| 403    | `UtaPermissionError` | Token lacks the `entitlements` scope.         |
+| 400    | `UtaError`           | Client not linked to an app (misconfig).      |
+| 5xx    | `UtaServerError`     | Retriable with backoff.                       |
 
 All inherit from `UtaError` — catch that for a single `except` clause.
+
+## Signing out
+
+Sign-out is RP-initiated: redirect the user to `logout_url(id_token=…)`. Both
+outcomes — they confirm, or they choose "Stay signed in" — return to your
+`post_logout_redirect_uri`, so you **can't** tell which happened from the
+redirect alone.
+
+So **don't clear your session when you start logout.** Reconcile on return
+using the token instead: a confirmed logout revokes it, so your next
+`get_entitlement()` raises `UtaTokenError` (401) — drop the token then. If they
+stayed signed in, the token is still valid and they keep their session.
+Clearing eagerly logs the user out of your app even when they chose to stay.
+
+## Migrating from v1
+
+| v1                                      | v2                                              |
+|-----------------------------------------|-------------------------------------------------|
+| `get_user(payload)` (decrypt envelope)  | `begin_login()` + `complete_login()` (OIDC)     |
+| `UtaUser.user_key`                       | `UtaSession.sub` (pairwise, stable per app)     |
+| `get_version(user_key) -> str`           | `get_entitlement(access_token) -> Entitlement`  |
+| RSA keys (`UTA_PRIVATE_KEY`, market key) | OAuth client (`UTA_CLIENT_ID`/`UTA_CLIENT_SECRET`)|
+| `UTA_APP_ID`                             | (gone — the client id identifies your app)      |
+| `uta_launch_view` Django decorator       | (gone — wire your own callback view)            |
+
+Register an OAuth client and redirect URI in your usethatapp.com
+developer dashboard to get `UTA_CLIENT_ID` / `UTA_CLIENT_SECRET`.
 
 ## License
 
 MIT — see [LICENSE](./LICENSE).
-

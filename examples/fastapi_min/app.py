@@ -1,61 +1,79 @@
-"""Minimal FastAPI integration for the UseThatApp SDK.
+"""Minimal FastAPI app: UseThatApp OIDC login + async entitlement (docs only).
+
+Shows the async hot path: `get_entitlement_async`. The one-time callback
+calls the sync `complete_login` (fine for a login round-trip).
 
 Run:
-    pip install usethatapp fastapi uvicorn
-    export UTA_APP_ID=...
-    export UTA_PRIVATE_KEY="$(cat dev_priv.pem)"
-    export UTA_MARKET_PUBLIC_KEY="$(cat market_pub.pem)"
-    uvicorn app:app --host 0.0.0.0 --port 8000
+    pip install usethatapp fastapi uvicorn itsdangerous
+    export UTA_CLIENT_ID=... UTA_CLIENT_SECRET=... UTA_REDIRECT_URI=http://localhost:8000/callback
+    uvicorn app:app
 """
 from __future__ import annotations
 
-from fastapi import FastAPI, HTTPException, Request
+import os
+
+from fastapi import FastAPI, Request
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from starlette.middleware.sessions import SessionMiddleware
 
 from usethatapp import (
     UtaError,
-    UtaSessionRevokedError,
-    get_user_from_request_async,
-    get_version_async,
+    UtaTokenError,
+    begin_login,
+    complete_login,
+    get_entitlement_async,
+    logout_url,
 )
 
 app = FastAPI()
-
-# Demo only — in production persist user_keys per-session (Redis, signed
-# cookies, your auth layer, etc.).
-_DEMO_SESSIONS: dict[str, str] = {}
+app.add_middleware(SessionMiddleware, secret_key=os.environ.get("SESSION_SECRET", "dev-only"))
 
 
-@app.post("/uta/launch/")
-async def launch(request: Request):
-    # FastAPI/Starlette: get_user_from_request_async awaits request.form() for you.
+@app.get("/login")
+def login(request: Request):
+    auth_url, flow_state = begin_login()
+    request.session["uta_flow"] = flow_state
+    return RedirectResponse(auth_url)
+
+
+@app.get("/callback")
+def callback(request: Request, code: str = "", state: str = "", error: str = ""):
+    # On cancel/deny, OAuth redirects back with ?error=... and no code.
+    if error:
+        request.session.pop("uta_flow", None)
+        return RedirectResponse("/")
     try:
-        uta_user = await get_user_from_request_async(request)
+        s = complete_login(
+            code=code, state=state, flow_state=request.session.pop("uta_flow", {})
+        )
     except UtaError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
-    # Tie uta_user.user_key to your own session id however you want.
-    session_id = request.headers.get("x-session-id", "demo-session")
-    _DEMO_SESSIONS[session_id] = uta_user.user_key
-
-    return {
-        "user_key": uta_user.user_key,
-        "app_id": uta_user.app_id,
-        "version_hint": uta_user.version_hint,  # first-paint only
-    }
+        return JSONResponse({"error": str(e)}, status_code=400)
+    request.session["uta_sub"] = s.sub
+    request.session["uta_access_token"] = s.access_token
+    request.session["uta_id_token"] = s.id_token
+    return RedirectResponse("/")
 
 
-@app.get("/me/version/")
-async def me_version(request: Request):
-    session_id = request.headers.get("x-session-id", "demo-session")
-    user_key = _DEMO_SESSIONS.get(session_id)
-    if not user_key:
-        raise HTTPException(status_code=401, detail="not launched")
-    try:
-        version = await get_version_async(user_key)
-    except UtaSessionRevokedError:
-        _DEMO_SESSIONS.pop(session_id, None)
-        raise HTTPException(status_code=401, detail="session revoked")
-    except UtaError as e:
-        raise HTTPException(status_code=502, detail=str(e))
-    return {"version": version}
+@app.get("/")
+async def home(request: Request):
+    token = request.session.get("uta_access_token")
+    if token:
+        try:
+            ent = await get_entitlement_async(token)
+            return {"sub": request.session.get("uta_sub"), "entitlement": ent.raw}
+        except UtaTokenError:
+            # Token revoked/expired (signed out of UseThatApp). Reconcile.
+            for k in ("uta_access_token", "uta_sub", "uta_id_token"):
+                request.session.pop(k, None)
+    return HTMLResponse('<a href="/login">Log in with UseThatApp</a>')
 
+
+@app.get("/logout")
+def logout(request: Request):
+    # Don't clear the session yet — the user may choose "Stay signed in". A
+    # real logout revokes the token, so the next get_entitlement (home) 401s
+    # and we drop it then.
+    id_token = request.session.get("uta_id_token")
+    return RedirectResponse(
+        logout_url(id_token=id_token, post_logout_redirect_uri="http://localhost:8000/")
+    )

@@ -1,221 +1,210 @@
-"""Tests for get_version / get_version_async (server-to-server license pull)."""
+"""Tests for the v2 OIDC client functions."""
 from __future__ import annotations
 
-import json
-import time
+from urllib.parse import parse_qs, urlparse
 
 import httpx
 import pytest
-from cryptography.hazmat.primitives import hashes
-from cryptography.hazmat.primitives.asymmetric import padding
 
 from usethatapp import (
-    UtaBadRequestError,
-    UtaError,
-    UtaServerError,
-    UtaSessionRevokedError,
-    UtaSignatureError,
-    UtaUnknownSessionError,
-    clear_version_cache,
-    get_version,
-    get_version_async,
+    begin_login,
+    complete_login,
+    get_entitlement,
+    get_entitlement_async,
+    logout_url,
+    refresh,
 )
-from usethatapp import config as uta_config
+from usethatapp.errors import (
+    UtaAuthError,
+    UtaPermissionError,
+    UtaServerError,
+    UtaTokenError,
+)
+from tests.conftest import API_URL, CLIENT_ID, METADATA, REDIRECT_URI
 
 
-# ──────────────────────────────────────────────────────────────────────
-# A tiny httpx mock transport that records each request and lets the
-# test set a response.
-# ──────────────────────────────────────────────────────────────────────
+# ── begin_login ───────────────────────────────────────────────────────
 
-class _Recorder:
-    def __init__(self):
-        self.requests = []
-        self.responder = lambda req: httpx.Response(200, json={
-            "version": "Pro", "cache_until": int(time.time()) + 60,
-            "cache_seconds": 60,
-        })
-
-    def __call__(self, request: httpx.Request) -> httpx.Response:
-        self.requests.append(request)
-        return self.responder(request)
-
-
-@pytest.fixture
-def httpx_mock(monkeypatch):
-    rec = _Recorder()
-    transport = httpx.MockTransport(rec)
-
-    original_post = httpx.post
-
-    def mock_post(url, **kwargs):
-        with httpx.Client(transport=transport) as client:
-            return client.post(url, **kwargs)
-
-    monkeypatch.setattr(httpx, "post", mock_post)
-
-    # Async path: patch AsyncClient to use the mock transport.
-    original_async_client = httpx.AsyncClient
-
-    class PatchedAsyncClient(original_async_client):
-        def __init__(self, *args, **kwargs):
-            kwargs["transport"] = httpx.MockTransport(rec)
-            super().__init__(*args, **kwargs)
-
-    monkeypatch.setattr(httpx, "AsyncClient", PatchedAsyncClient)
-    return rec
+def test_begin_login_builds_authorize_url_with_pkce(oidc_routes):
+    url, flow_state = begin_login()
+    parsed = urlparse(url)
+    q = parse_qs(parsed.query)
+    assert url.startswith(METADATA["authorization_endpoint"])
+    assert q["response_type"] == ["code"]
+    assert q["client_id"] == [CLIENT_ID]
+    assert q["redirect_uri"] == [REDIRECT_URI]
+    assert q["code_challenge_method"] == ["S256"]
+    assert "openid" in q["scope"][0]
+    # flow_state is JSON-able and carries the PKCE verifier + state + nonce.
+    assert set(flow_state) == {"state", "nonce", "code_verifier", "redirect_uri"}
+    assert q["state"] == [flow_state["state"]]
+    assert q["nonce"] == [flow_state["nonce"]]
 
 
-# ──────────────────────────────────────────────────────────────────────
-# Sync happy path
-# ──────────────────────────────────────────────────────────────────────
-
-def test_get_version_happy_path(httpx_mock, app_id, market_keypair):
-    version = get_version("uk-1")
-    assert version == "Pro"
-    assert len(httpx_mock.requests) == 1
-
-    req = httpx_mock.requests[0]
-    assert req.method == "POST"
-    assert req.url.path == "/licensing/getversion/"
-    assert req.headers["content-type"].startswith("application/json")
-
-    body = json.loads(req.content)
-    assert body["app_id"] == app_id
-    assert body["user_key"] == "uk-1"
-    assert isinstance(body["ts"], int)
-    assert abs(body["ts"] - int(time.time())) < 5
-    assert isinstance(body["nonce"], str) and len(body["nonce"]) == 32
-    assert "signature" in body
+def test_begin_login_state_and_verifier_are_random(oidc_routes):
+    _, fs1 = begin_login()
+    _, fs2 = begin_login()
+    assert fs1["state"] != fs2["state"]
+    assert fs1["code_verifier"] != fs2["code_verifier"]
 
 
-def test_request_body_is_canonical_and_signed(httpx_mock, developer_keypair):
-    get_version("uk-1")
-    req = httpx_mock.requests[0]
-    body = json.loads(req.content)
+# ── complete_login ────────────────────────────────────────────────────
 
-    # Reconstruct canonical bytes — sorted keys, compact separators.
-    canonical_dict = {k: body[k] for k in ("app_id", "user_key", "ts", "nonce")}
-    canonical = json.dumps(
-        canonical_dict, sort_keys=True, separators=(",", ":")
-    ).encode("utf-8")
-
-    sig = bytes.fromhex(body["signature"])
-    # Verify with the developer's *public* key — must not raise.
-    developer_keypair.public_key().verify(
-        sig,
-        canonical,
-        padding.PSS(mgf=padding.MGF1(hashes.SHA256()),
-                    salt_length=padding.PSS.MAX_LENGTH),
-        hashes.SHA256(),
+def _token_response(make_id_token, **id_overrides):
+    return httpx.Response(
+        200,
+        json={
+            "access_token": "at-123",
+            "refresh_token": "rt-456",
+            "id_token": make_id_token(**id_overrides),
+            "token_type": "Bearer",
+            "expires_in": 1800,
+            "scope": "openid entitlements",
+        },
     )
 
 
-def test_fresh_nonce_and_ts_per_call(httpx_mock):
-    # bypass cache
-    get_version("uk-1", use_cache=False)
-    get_version("uk-1", use_cache=False)
-    nonces = [json.loads(r.content)["nonce"] for r in httpx_mock.requests]
-    assert nonces[0] != nonces[1]
+def test_complete_login_success(oidc_routes, make_id_token):
+    flow_state = {"state": "st", "nonce": "test-nonce", "code_verifier": "v", "redirect_uri": REDIRECT_URI}
+    oidc_routes.post(METADATA["token_endpoint"]).mock(
+        return_value=_token_response(make_id_token, nonce="test-nonce")
+    )
+    session = complete_login(code="abc", state="st", flow_state=flow_state)
+    assert session.sub == "pairwise-sub-abc"
+    assert session.access_token == "at-123"
+    assert session.refresh_token == "rt-456"
+    assert session.expires_at > 0
 
 
-def test_caches_within_cache_until(httpx_mock):
-    # Default responder returns cache_until = now + 60.
-    v1 = get_version("uk-cache")
-    v2 = get_version("uk-cache")
-    assert v1 == v2 == "Pro"
-    assert len(httpx_mock.requests) == 1  # second call served from cache
+def test_complete_login_state_mismatch_raises(oidc_routes, make_id_token):
+    flow_state = {"state": "expected", "nonce": "test-nonce", "code_verifier": "v", "redirect_uri": REDIRECT_URI}
+    with pytest.raises(UtaAuthError, match="state mismatch"):
+        complete_login(code="abc", state="WRONG", flow_state=flow_state)
 
 
-def test_use_cache_false_bypasses_cache(httpx_mock):
-    get_version("uk-cache")
-    get_version("uk-cache", use_cache=False)
-    assert len(httpx_mock.requests) == 2
+def test_complete_login_nonce_mismatch_raises(oidc_routes, make_id_token):
+    flow_state = {"state": "st", "nonce": "expected-nonce", "code_verifier": "v", "redirect_uri": REDIRECT_URI}
+    oidc_routes.post(METADATA["token_endpoint"]).mock(
+        return_value=_token_response(make_id_token, nonce="DIFFERENT")
+    )
+    with pytest.raises(UtaTokenError, match="nonce"):
+        complete_login(code="abc", state="st", flow_state=flow_state)
 
 
-def test_cache_expiry_triggers_new_request(httpx_mock):
-    # Responder with cache_until in the past => never cached.
-    httpx_mock.responder = lambda req: httpx.Response(200, json={
-        "version": "Free",
-        "cache_until": int(time.time()) - 1,
-        "cache_seconds": 0,
-    })
-    get_version("uk-expire")
-    get_version("uk-expire")
-    assert len(httpx_mock.requests) == 2
+def test_complete_login_expired_id_token_raises(oidc_routes, make_id_token):
+    flow_state = {"state": "st", "nonce": "test-nonce", "code_verifier": "v", "redirect_uri": REDIRECT_URI}
+    oidc_routes.post(METADATA["token_endpoint"]).mock(
+        return_value=_token_response(make_id_token, nonce="test-nonce", exp=1),
+    )
+    with pytest.raises(UtaTokenError, match="ID token validation failed"):
+        complete_login(code="abc", state="st", flow_state=flow_state)
 
 
-def test_returns_none_when_version_null(httpx_mock):
-    httpx_mock.responder = lambda req: httpx.Response(200, json={
-        "version": None,
-        "cache_until": int(time.time()) + 30,
-        "cache_seconds": 30,
-    })
-    assert get_version("uk-null") is None
+def test_complete_login_wrong_audience_raises(oidc_routes, make_id_token):
+    flow_state = {"state": "st", "nonce": "test-nonce", "code_verifier": "v", "redirect_uri": REDIRECT_URI}
+    oidc_routes.post(METADATA["token_endpoint"]).mock(
+        return_value=_token_response(make_id_token, nonce="test-nonce", aud="someone-else"),
+    )
+    with pytest.raises(UtaTokenError):
+        complete_login(code="abc", state="st", flow_state=flow_state)
 
 
-# ──────────────────────────────────────────────────────────────────────
-# Error mapping
-# ──────────────────────────────────────────────────────────────────────
+def test_complete_login_token_endpoint_error(oidc_routes):
+    flow_state = {"state": "st", "nonce": "test-nonce", "code_verifier": "v", "redirect_uri": REDIRECT_URI}
+    oidc_routes.post(METADATA["token_endpoint"]).mock(
+        return_value=httpx.Response(400, json={"error": "invalid_grant"})
+    )
+    with pytest.raises(UtaTokenError, match="invalid_grant"):
+        complete_login(code="abc", state="st", flow_state=flow_state)
+
+
+# ── get_entitlement ───────────────────────────────────────────────────
+
+def test_get_entitlement_licensed(oidc_routes):
+    oidc_routes.get(API_URL + "/licensing/entitlement/").mock(
+        return_value=httpx.Response(200, json={
+            "entitled": True, "version": "Pro", "product_id": "p-1",
+            "status": "active", "is_free": False, "period_end": "2026-07-01",
+        })
+    )
+    ent = get_entitlement("at-123")
+    assert ent.entitled and ent.version == "Pro" and ent.product_id == "p-1"
+    assert ent.status == "active" and ent.is_free is False
+    assert ent.period_end == "2026-07-01"
+
+
+def test_get_entitlement_free(oidc_routes):
+    oidc_routes.get(API_URL + "/licensing/entitlement/").mock(
+        return_value=httpx.Response(200, json={
+            "entitled": True, "version": "Free", "product_id": "p-0",
+            "status": "free", "is_free": True, "period_end": None,
+        })
+    )
+    ent = get_entitlement("at-123")
+    assert ent.entitled and ent.is_free and ent.status == "free"
+
 
 @pytest.mark.parametrize("status,exc", [
-    (400, UtaBadRequestError),
-    (401, UtaSignatureError),
-    (403, UtaSessionRevokedError),
-    (404, UtaUnknownSessionError),
+    (401, UtaTokenError),
+    (403, UtaPermissionError),
     (500, UtaServerError),
-    (502, UtaServerError),
-    (503, UtaServerError),
 ])
-def test_http_status_mapping(httpx_mock, status, exc):
-    httpx_mock.responder = lambda req, s=status: httpx.Response(s, text="nope")
-    with pytest.raises(exc):
-        get_version("uk-err", use_cache=False)
-
-
-def test_network_error_maps_to_server_error(monkeypatch):
-    def boom(*args, **kwargs):
-        raise httpx.ConnectError("nope")
-    monkeypatch.setattr(httpx, "post", boom)
-    with pytest.raises(UtaServerError):
-        get_version("uk-net", use_cache=False)
-
-
-def test_invalid_json_response(httpx_mock):
-    httpx_mock.responder = lambda req: httpx.Response(
-        200, text="not json", headers={"content-type": "application/json"}
+def test_get_entitlement_status_mapping(oidc_routes, status, exc):
+    oidc_routes.get(API_URL + "/licensing/entitlement/").mock(
+        return_value=httpx.Response(status, text="nope")
     )
-    with pytest.raises(UtaError):
-        get_version("uk-bad", use_cache=False)
-
-
-def test_response_missing_version(httpx_mock):
-    httpx_mock.responder = lambda req: httpx.Response(200, json={"cache_until": 0})
-    with pytest.raises(UtaError, match="missing 'version'"):
-        get_version("uk-miss", use_cache=False)
-
-
-def test_empty_user_key_rejected():
-    with pytest.raises(UtaError):
-        get_version("")
-
-
-# ──────────────────────────────────────────────────────────────────────
-# Async path
-# ──────────────────────────────────────────────────────────────────────
-
-@pytest.mark.asyncio
-async def test_get_version_async_happy(httpx_mock):
-    clear_version_cache()
-    version = await get_version_async("uk-async")
-    assert version == "Pro"
-    assert len(httpx_mock.requests) == 1
+    with pytest.raises(exc):
+        get_entitlement("at-123")
 
 
 @pytest.mark.asyncio
-async def test_get_version_async_403(httpx_mock):
-    clear_version_cache()
-    httpx_mock.responder = lambda req: httpx.Response(403, text="revoked")
-    with pytest.raises(UtaSessionRevokedError):
-        await get_version_async("uk-async-403", use_cache=False)
+async def test_get_entitlement_async(oidc_routes):
+    oidc_routes.get(API_URL + "/licensing/entitlement/").mock(
+        return_value=httpx.Response(200, json={
+            "entitled": False, "version": None, "product_id": None,
+            "status": "none", "is_free": False,
+        })
+    )
+    ent = await get_entitlement_async("at-123")
+    assert ent.entitled is False and ent.status == "none"
 
+
+# ── refresh / logout ──────────────────────────────────────────────────
+
+def test_refresh_with_new_id_token(oidc_routes, make_id_token):
+    oidc_routes.post(METADATA["token_endpoint"]).mock(
+        return_value=httpx.Response(200, json={
+            "access_token": "at-new", "refresh_token": "rt-new",
+            "id_token": make_id_token(), "token_type": "Bearer",
+            "expires_in": 1800, "scope": "openid entitlements",
+        })
+    )
+    session = refresh("rt-456")
+    assert session.access_token == "at-new"
+    assert session.refresh_token == "rt-new"
+    assert session.sub == "pairwise-sub-abc"
+
+
+def test_refresh_without_id_token_falls_back_to_userinfo(oidc_routes):
+    oidc_routes.post(METADATA["token_endpoint"]).mock(
+        return_value=httpx.Response(200, json={
+            "access_token": "at-new", "token_type": "Bearer", "expires_in": 1800,
+        })
+    )
+    oidc_routes.get(METADATA["userinfo_endpoint"]).mock(
+        return_value=httpx.Response(200, json={"sub": "pairwise-sub-abc"})
+    )
+    session = refresh("rt-456")
+    assert session.sub == "pairwise-sub-abc"
+    # Rotation didn't return a new refresh token → carry the old one forward.
+    assert session.refresh_token == "rt-456"
+
+
+def test_logout_url(oidc_routes):
+    url = logout_url(id_token="idt", post_logout_redirect_uri="https://app.test.example/bye")
+    parsed = urlparse(url)
+    q = parse_qs(parsed.query)
+    assert url.startswith(METADATA["end_session_endpoint"])
+    assert q["id_token_hint"] == ["idt"]
+    assert q["post_logout_redirect_uri"] == ["https://app.test.example/bye"]
+    assert q["client_id"] == [CLIENT_ID]
