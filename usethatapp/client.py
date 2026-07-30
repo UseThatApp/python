@@ -515,6 +515,7 @@ def _parse_entitlement(data: Mapping[str, Any]) -> Entitlement:
         status=str(data.get("status", "none")),
         is_free=bool(data.get("is_free", False)),
         period_end=data.get("period_end"),
+        product_public_id=data.get("product_public_id"),
         raw=dict(data),
     )
 

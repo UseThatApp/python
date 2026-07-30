@@ -61,7 +61,9 @@ class Entitlement:
     """Product/plan display name, or ``None`` when not entitled."""
 
     product_id: Optional[str]
-    """Stable product UUID — prefer this over ``version`` for gating logic."""
+    """Stable product identifier — prefer this over ``version`` for gating
+    logic. Currently a legacy UUID; after the platform's identifier cutover
+    it carries the same opaque ``prod_…`` value as ``product_public_id``."""
 
     status: str
     """``active``/``trialing``/``one_time_active``/``free``/``none``/…"""
@@ -71,6 +73,11 @@ class Entitlement:
 
     period_end: Optional[str] = None
     """ISO date the current license period ends, or ``None``."""
+
+    product_public_id: Optional[str] = None
+    """Opaque public product identifier (``prod_…``) — matches
+    :attr:`Price.product_id` from the pricing API. New integrations should
+    gate on this field."""
 
     raw: Dict[str, Any] = field(default_factory=dict)
     """The full decoded response, for forward-compatibility."""
@@ -121,7 +128,9 @@ class Price:
     """Opaque public price identifier (``prc_…``); pass to :func:`usethatapp.purchase_url`."""
 
     product_id: str
-    """Stable product UUID — matches :attr:`Entitlement.product_id` for gating."""
+    """Opaque product identifier (``prod_…``) — matches
+    :attr:`Entitlement.product_public_id` for gating (and
+    ``Entitlement.product_id`` after the platform's identifier cutover)."""
 
     product_name: str
     """The product/plan display name."""

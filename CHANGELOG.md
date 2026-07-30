@@ -27,6 +27,10 @@ existing changed.
 - New frozen dataclasses: `AppInfo`, `Price` (`public_id`, `product_id`,
   `product_name`, `amount` — a decimal string, `currency`, `is_recurring`,
   `frequency`, `buy_url`), and `AppPrices`.
+- `Entitlement.product_public_id` — the opaque public product identifier
+  (`prod_…`) matching `Price.product_id` from the pricing API. New
+  integrations should gate on it; `Entitlement.product_id` currently
+  carries a legacy UUID and will converge on the same `prod_…` value.
 
 ## [2.0.0] - 2026-06-21
 
