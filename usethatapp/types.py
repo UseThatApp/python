@@ -9,7 +9,7 @@ but cannot be correlated against other apps.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 
 @dataclass(frozen=True)
@@ -76,4 +76,96 @@ class Entitlement:
     """The full decoded response, for forward-compatibility."""
 
 
-__all__ = ["UtaSession", "Entitlement"]
+@dataclass(frozen=True)
+class AppInfo:
+    """Public listing details for an app, from the anonymous apps API.
+
+    Returned by :func:`usethatapp.get_app_info`. The endpoint needs no
+    authentication, so this is safe to call from anywhere — including a
+    plain marketing site that never logs anyone in.
+    """
+
+    client_id: str
+    """The app's OAuth client id (same value as ``UTA_CLIENT_ID``)."""
+
+    name: str
+    """The app's display name."""
+
+    tagline: str
+    """Short marketing tagline set by the seller."""
+
+    listing_mode: str
+    """``marketplace`` or ``external`` — where the app is sold."""
+
+    url: str
+    """The app's own website URL."""
+
+    marketplace_url: str
+    """The app's listing page on usethatapp.com."""
+
+    raw: Dict[str, Any] = field(default_factory=dict)
+    """The full decoded response, for forward-compatibility."""
+
+
+@dataclass(frozen=True)
+class Price:
+    """One purchasable price for an app, from the anonymous pricing API.
+
+    Render prices from :func:`usethatapp.get_prices` instead of hardcoding
+    them — sellers can change prices at any time. ``product_id`` matches
+    the entitlement endpoint's ``product_id``, so it is the key to use for
+    feature gating after purchase.
+    """
+
+    public_id: str
+    """Opaque public price identifier (``prc_…``); pass to :func:`usethatapp.purchase_url`."""
+
+    product_id: str
+    """Stable product UUID — matches :attr:`Entitlement.product_id` for gating."""
+
+    product_name: str
+    """The product/plan display name."""
+
+    amount: str
+    """Decimal amount as a string (e.g. ``"10.00"``) — kept as ``str`` so
+    no float precision is imposed on you. Parse with :class:`decimal.Decimal`."""
+
+    currency: str
+    """Lowercase ISO currency code (e.g. ``usd``)."""
+
+    is_recurring: bool
+    """True for subscriptions, False for one-time purchases."""
+
+    frequency: Optional[str]
+    """Billing interval — ``day``/``week``/``month``/``year`` — or ``None``
+    for one-time purchases."""
+
+    buy_url: str
+    """Ready-made hosted checkout link for this price (what
+    :func:`usethatapp.purchase_url` builds, minus the optional params)."""
+
+
+@dataclass(frozen=True)
+class AppPrices:
+    """An app's full public price list, from the anonymous pricing API.
+
+    Returned by :func:`usethatapp.get_prices`.
+    """
+
+    client_id: str
+    """The app's OAuth client id (same value as ``UTA_CLIENT_ID``)."""
+
+    app_name: str
+    """The app's display name."""
+
+    has_free_tier: bool
+    """True if the app offers a free tier (no purchase needed to start)."""
+
+    prices: Tuple[Price, ...]
+    """Every purchasable price, ready to render as a pricing table."""
+
+    raw: Dict[str, Any] = field(default_factory=dict)
+    """The full decoded response, for forward-compatibility."""
+
+
+__all__ = ["UtaSession", "Entitlement", "AppInfo", "Price", "AppPrices"]

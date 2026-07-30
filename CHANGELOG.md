@@ -4,6 +4,30 @@ All notable changes to this project are documented in this file. This project ad
 [Semantic Versioning](https://semver.org/) and follows a clear, machine- and human-readable
 format inspired by "Keep a Changelog".
 
+## [2.1.0] - 2026-07-30
+
+Purely additive release: thin, dependency-free support for selling your
+app from your own website — hosted purchase links, the buyer management
+page, and the public (anonymous, CORS-enabled) app/pricing APIs. Nothing
+existing changed.
+
+### Added
+
+- `purchase_url(price_id, *, next=, ref=, email=)` — build the hosted
+  checkout URL for a public price id (`prc_…`). Pure URL builder, no
+  network.
+- `manage_url(*, next=)` — build the buyer's subscription-management page
+  URL for your app. Pure URL builder, no network.
+- `get_app_info()` / `get_app_info_async()` → `AppInfo(client_id, name,
+  tagline, listing_mode, url, marketplace_url)`, from the anonymous
+  public apps API.
+- `get_prices()` / `get_prices_async()` → `AppPrices(client_id, app_name,
+  has_free_tier, prices)`, from the anonymous public pricing API —
+  render your pricing UI from this instead of hardcoding amounts.
+- New frozen dataclasses: `AppInfo`, `Price` (`public_id`, `product_id`,
+  `product_name`, `amount` — a decimal string, `currency`, `is_recurring`,
+  `frequency`, `buy_url`), and `AppPrices`.
+
 ## [2.0.0] - 2026-06-21
 
 Breaking rewrite onto standard OAuth2 / OpenID Connect. usethatapp.com is

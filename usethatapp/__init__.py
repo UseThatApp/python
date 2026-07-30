@@ -21,9 +21,15 @@ from __future__ import annotations
 from .client import (
     begin_login,
     complete_login,
+    get_app_info,
+    get_app_info_async,
     get_entitlement,
     get_entitlement_async,
+    get_prices,
+    get_prices_async,
     logout_url,
+    manage_url,
+    purchase_url,
     refresh,
     userinfo,
 )
@@ -36,9 +42,9 @@ from .errors import (
     UtaServerError,
     UtaTokenError,
 )
-from .types import Entitlement, UtaSession
+from .types import AppInfo, AppPrices, Entitlement, Price, UtaSession
 
-__version__ = "2.0.0"
+__version__ = "2.1.0"
 
 __all__ = [
     "__version__",
@@ -51,9 +57,19 @@ __all__ = [
     # entitlement
     "get_entitlement",
     "get_entitlement_async",
+    # purchase links & public pricing
+    "purchase_url",
+    "manage_url",
+    "get_app_info",
+    "get_app_info_async",
+    "get_prices",
+    "get_prices_async",
     # types
     "UtaSession",
     "Entitlement",
+    "AppInfo",
+    "Price",
+    "AppPrices",
     # errors
     "UtaError",
     "UtaConfigError",
