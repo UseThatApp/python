@@ -73,7 +73,7 @@ from usethatapp import (
     get_prices,         # () -> AppPrices      (anonymous public API)
     get_prices_async,
     UtaSession,         # sub, access_token, refresh_token, id_token, expires_at, ...
-    Entitlement,        # entitled, version, product_id, status, is_free, period_end
+    Entitlement,        # entitled, version, product_id, product_public_id, status, ...
     AppInfo,            # client_id, name, tagline, listing_mode, url, marketplace_url
     Price,              # public_id, product_id, product_name, amount, currency, ...
     AppPrices,          # client_id, app_name, has_free_tier, prices
@@ -164,9 +164,11 @@ for price in pricing.prices:
 ```
 
 `Price.amount` is a decimal **string** (e.g. `"10.00"`) — parse with
-`decimal.Decimal` if you need arithmetic. `Price.product_id` matches
-`Entitlement.product_id`, so it's the key to gate features on after
-purchase.
+`decimal.Decimal` if you need arithmetic. `Price.product_id` is the
+opaque `prod_…` identifier to gate features on after purchase — compare
+it against **`Entitlement.product_public_id`** (`Entitlement.product_id`
+still carries the legacy UUID until the platform's identifier cutover,
+after which both fields carry the same `prod_…` value).
 
 Notes: UseThatApp is the **merchant of record** (checkout, tax, refunds
 are handled for you). Purchases are currently **US-only**. External

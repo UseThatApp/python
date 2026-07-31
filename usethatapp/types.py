@@ -74,13 +74,17 @@ class Entitlement:
     period_end: Optional[str] = None
     """ISO date the current license period ends, or ``None``."""
 
+    raw: Dict[str, Any] = field(default_factory=dict)
+    """The full decoded response, for forward-compatibility."""
+
+    # Appended AFTER ``raw`` deliberately: inserting a field ahead of it
+    # would silently rebind positional constructor arguments written
+    # against 2.0 (``Entitlement(..., period_end, raw_dict)``), landing the
+    # raw dict in this field with no error. New fields go on the end.
     product_public_id: Optional[str] = None
     """Opaque public product identifier (``prod_…``) — matches
     :attr:`Price.product_id` from the pricing API. New integrations should
     gate on this field."""
-
-    raw: Dict[str, Any] = field(default_factory=dict)
-    """The full decoded response, for forward-compatibility."""
 
 
 @dataclass(frozen=True)
@@ -119,9 +123,9 @@ class Price:
     """One purchasable price for an app, from the anonymous pricing API.
 
     Render prices from :func:`usethatapp.get_prices` instead of hardcoding
-    them — sellers can change prices at any time. ``product_id`` matches
-    the entitlement endpoint's ``product_id``, so it is the key to use for
-    feature gating after purchase.
+    them — sellers can change prices at any time. ``product_id`` here is
+    the opaque ``prod_…`` identifier to gate on: compare it against
+    :attr:`Entitlement.product_public_id`.
     """
 
     public_id: str

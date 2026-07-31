@@ -362,8 +362,11 @@ def get_prices(*, timeout: Optional[float] = None) -> AppPrices:
 
     Render your pricing UI from this instead of hardcoding amounts —
     sellers can change prices at any time. Each :class:`~usethatapp.Price`
-    carries the entitlement-matching ``product_id`` for feature gating and
-    a ready-made hosted checkout ``buy_url``.
+    carries a ready-made hosted checkout ``buy_url`` and the opaque
+    ``product_id`` to gate on — compare it against
+    :attr:`Entitlement.product_public_id` (``Entitlement.product_id``
+    still carries the legacy UUID until the platform's identifier
+    cutover).
     """
     url = _public_app_url() + "prices/"
     try:

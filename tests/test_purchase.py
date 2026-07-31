@@ -226,3 +226,16 @@ async def test_get_prices_async_status_mapping(respx_mock, status, exc):
     respx_mock.get(PRICES_URL).mock(return_value=httpx.Response(status, text="nope"))
     with pytest.raises(exc):
         await get_prices_async()
+
+
+def test_entitlement_positional_construction_stays_compatible():
+    """Regression: product_public_id must never sit ahead of ``raw``.
+
+    2.0-era code constructs Entitlement positionally through ``raw``; a field
+    inserted before it would silently bind the raw dict to the new field.
+    """
+    from usethatapp import Entitlement
+
+    ent = Entitlement(True, "Pro", "uuid-1", "active", False, None, {"k": "v"})
+    assert ent.raw == {"k": "v"}
+    assert ent.product_public_id is None
