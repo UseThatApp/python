@@ -97,6 +97,12 @@ def test_purchase_url_empty_price_id_raises(bad):
         purchase_url(bad)
 
 
+def test_purchase_url_strips_and_quotes_price_id():
+    assert purchase_url(" prc_123 ") == API_URL + "/buy/prc_123/"
+    # URL-unsafe characters can't restructure the path/query.
+    assert purchase_url("prc/../x?a=1") == API_URL + "/buy/prc%2F..%2Fx%3Fa%3D1/"
+
+
 def test_purchase_url_default_api_url(monkeypatch):
     monkeypatch.delenv("UTA_API_URL", raising=False)
     assert purchase_url("prc_123") == "https://www.usethatapp.com/buy/prc_123/"
@@ -200,6 +206,14 @@ def test_get_prices(respx_mock):
 def test_get_prices_status_mapping(respx_mock, status, exc):
     respx_mock.get(PRICES_URL).mock(return_value=httpx.Response(status, text="nope"))
     with pytest.raises(exc):
+        get_prices()
+
+
+@pytest.mark.parametrize("bad_entry", ["prc_x", None, 3])
+def test_get_prices_non_dict_entry_raises_uta_error(respx_mock, bad_entry):
+    bad = {**PRICES_JSON, "prices": [bad_entry]}
+    respx_mock.get(PRICES_URL).mock(return_value=httpx.Response(200, json=bad))
+    with pytest.raises(UtaError, match="price entry"):
         get_prices()
 
 

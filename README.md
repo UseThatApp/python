@@ -105,9 +105,10 @@ session = complete_login(
 save_to_session("uta_sub", session.sub)
 save_to_session("uta_access_token", session.access_token)
 
-# 3) Anywhere you gate features:
+# 3) Anywhere you gate features. Gate on product_public_id — the opaque
+#    prod_… id that matches Price.product_id from get_prices():
 ent = get_entitlement(load_from_session("uta_access_token"))
-if ent.entitled and ent.product_id == "...":
+if ent.entitled and ent.product_public_id == "prod_...":
     ...
 ```
 

@@ -61,9 +61,10 @@ class Entitlement:
     """Product/plan display name, or ``None`` when not entitled."""
 
     product_id: Optional[str]
-    """Stable product identifier — prefer this over ``version`` for gating
-    logic. Currently a legacy UUID; after the platform's identifier cutover
-    it carries the same opaque ``prod_…`` value as ``product_public_id``."""
+    """Legacy UUID product identifier. For gating, prefer
+    :attr:`product_public_id` — it matches :attr:`Price.product_id` from the
+    pricing API. After the platform's identifier cutover this field carries
+    the same opaque ``prod_…`` value as ``product_public_id``."""
 
     status: str
     """``active``/``trialing``/``one_time_active``/``free``/``none``/…"""

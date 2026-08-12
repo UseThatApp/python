@@ -17,10 +17,11 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import json
 import secrets
 import time
 from typing import Any, Dict, Mapping, Optional, Tuple, cast
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 
 import httpx
 from joserfc import jwt
@@ -85,6 +86,13 @@ def begin_login(
     if prompt:
         params["prompt"] = prompt
     if extra_params:
+        clashes = sorted(set(params) & set(extra_params))
+        if clashes:
+            raise ValueError(
+                "extra_params may not override reserved OAuth parameters "
+                f"({', '.join(clashes)}) — the paired complete_login() validates "
+                "against the internally generated values in flow_state"
+            )
         params.update(extra_params)
 
     auth_url = meta["authorization_endpoint"] + "?" + urlencode(params)
@@ -150,10 +158,12 @@ def refresh(refresh_token: Optional[str]) -> UtaSession:
     if not refresh_token:
         raise UtaTokenError("refresh_token is required")
     meta = _discovery.get_metadata(cfg)
+    # No ``scope`` param: RFC 6749 §6 then treats the request as asking for
+    # the original grant's scope, which may be narrower than cfg.scopes.
     token = _token_request(
         cfg,
         meta,
-        {"grant_type": "refresh_token", "refresh_token": refresh_token, "scope": cfg.scopes},
+        {"grant_type": "refresh_token", "refresh_token": refresh_token},
     )
     # Carry the old refresh token forward if rotation didn't return a new one.
     token.setdefault("refresh_token", refresh_token)
@@ -163,7 +173,10 @@ def refresh(refresh_token: Optional[str]) -> UtaSession:
         claims = _validate_id_token(cfg, id_token, nonce=None)
         return _session(token, sub=str(claims["sub"]), claims=dict(claims), id_token=id_token)
     info = userinfo(token["access_token"])
-    return _session(token, sub=str(info.get("sub", "")), claims=dict(info), id_token=None)
+    sub = info.get("sub")
+    if not sub:
+        raise UtaTokenError("userinfo response missing sub")
+    return _session(token, sub=str(sub), claims=dict(info), id_token=None)
 
 
 def userinfo(access_token: str) -> Dict[str, Any]:
@@ -183,8 +196,12 @@ def userinfo(access_token: str) -> Dict[str, Any]:
         raise UtaServerError(f"network error calling userinfo: {e}")
     if resp.status_code == 401:
         raise UtaTokenError(f"401 from userinfo: {resp.text}")
+    if resp.status_code == 403:
+        raise UtaPermissionError(f"403 from userinfo — token lacks required scope: {resp.text}")
     if resp.status_code >= 500:
         raise UtaServerError(f"{resp.status_code} from userinfo: {resp.text}")
+    if not (200 <= resp.status_code < 300):
+        raise UtaError(f"unexpected status {resp.status_code} from userinfo: {resp.text}")
     try:
         return cast(Dict[str, Any], resp.json())
     except ValueError as e:
@@ -294,7 +311,7 @@ def purchase_url(
     """
     if not price_id or not price_id.strip():
         raise ValueError("price_id must be a non-empty string")
-    url = _config.resolve_api_url() + f"/buy/{price_id}/"
+    url = _config.resolve_api_url() + f"/buy/{quote(price_id.strip(), safe='')}/"
     params: Dict[str, str] = {}
     if next is not None:
         params["next"] = next
@@ -441,11 +458,30 @@ def _token_request(
     return cast(Dict[str, Any], payload)
 
 
+def _unverified_kid(id_token: str) -> Optional[str]:
+    """Read the JOSE header ``kid`` without verifying the signature."""
+    try:
+        header_b64 = id_token.split(".")[0]
+        padded = header_b64 + "=" * (-len(header_b64) % 4)
+        header = json.loads(base64.urlsafe_b64decode(padded))
+    except Exception:
+        return None
+    kid = header.get("kid") if isinstance(header, dict) else None
+    return kid if isinstance(kid, str) else None
+
+
 def _decode_id_token(cfg: "_config.UtaConfig", id_token: str) -> Any:
     """Decode + RS256 signature-verify, refetching JWKS once on key rotation."""
+    jwks = _discovery.get_jwks(cfg)
     try:
-        return jwt.decode(id_token, _discovery.get_jwks(cfg), algorithms=["RS256"])
+        return jwt.decode(id_token, jwks, algorithms=["RS256"])
     except JoseError:
+        # Refetch only when the token references a key we don't have cached
+        # (rotation). Any other failure is final — a refetch can't fix it,
+        # and would let every bad token trigger a network round-trip.
+        kid = _unverified_kid(id_token)
+        if kid is None or any(getattr(k, "kid", None) == kid for k in jwks.keys):
+            raise
         return jwt.decode(
             id_token, _discovery.get_jwks(cfg, force=True), algorithms=["RS256"]
         )
@@ -571,6 +607,8 @@ def _parse_app_info(data: Mapping[str, Any]) -> AppInfo:
 
 
 def _parse_price(data: Mapping[str, Any]) -> Price:
+    if not isinstance(data, Mapping):
+        raise UtaError("price entry is not a JSON object")
     frequency = data.get("frequency")
     return Price(
         public_id=str(data.get("public_id", "")),

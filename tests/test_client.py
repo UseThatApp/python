@@ -13,9 +13,11 @@ from usethatapp import (
     get_entitlement_async,
     logout_url,
     refresh,
+    userinfo,
 )
 from usethatapp.errors import (
     UtaAuthError,
+    UtaError,
     UtaPermissionError,
     UtaServerError,
     UtaTokenError,
@@ -46,6 +48,17 @@ def test_begin_login_state_and_verifier_are_random(oidc_routes):
     _, fs2 = begin_login()
     assert fs1["state"] != fs2["state"]
     assert fs1["code_verifier"] != fs2["code_verifier"]
+
+
+def test_begin_login_extra_params_cannot_override_reserved(oidc_routes):
+    with pytest.raises(ValueError, match="state"):
+        begin_login(extra_params={"state": "my-tracking-id"})
+
+
+def test_begin_login_extra_params_passthrough(oidc_routes):
+    url, _ = begin_login(extra_params={"audience": "api://x"})
+    q = parse_qs(urlparse(url).query)
+    assert q["audience"] == ["api://x"]
 
 
 # ── complete_login ────────────────────────────────────────────────────
@@ -125,10 +138,12 @@ def test_get_entitlement_licensed(oidc_routes):
         return_value=httpx.Response(200, json={
             "entitled": True, "version": "Pro", "product_id": "p-1",
             "status": "active", "is_free": False, "period_end": "2026-07-01",
+            "product_public_id": "prod_abc123",
         })
     )
     ent = get_entitlement("at-123")
     assert ent.entitled and ent.version == "Pro" and ent.product_id == "p-1"
+    assert ent.product_public_id == "prod_abc123"
     assert ent.status == "active" and ent.is_free is False
     assert ent.period_end == "2026-07-01"
 
@@ -198,6 +213,34 @@ def test_refresh_without_id_token_falls_back_to_userinfo(oidc_routes):
     assert session.sub == "pairwise-sub-abc"
     # Rotation didn't return a new refresh token → carry the old one forward.
     assert session.refresh_token == "rt-456"
+
+
+def test_refresh_userinfo_fallback_missing_sub_raises(oidc_routes):
+    oidc_routes.post(METADATA["token_endpoint"]).mock(
+        return_value=httpx.Response(200, json={
+            "access_token": "at-new", "token_type": "Bearer", "expires_in": 1800,
+        })
+    )
+    oidc_routes.get(METADATA["userinfo_endpoint"]).mock(
+        return_value=httpx.Response(200, json={"detail": "no sub here"})
+    )
+    with pytest.raises(UtaTokenError, match="missing sub"):
+        refresh("rt-456")
+
+
+@pytest.mark.parametrize("status,exc", [
+    (400, UtaError),
+    (401, UtaTokenError),
+    (403, UtaPermissionError),
+    (404, UtaError),
+    (500, UtaServerError),
+])
+def test_userinfo_status_mapping(oidc_routes, status, exc):
+    oidc_routes.get(METADATA["userinfo_endpoint"]).mock(
+        return_value=httpx.Response(status, json={"detail": "nope"})
+    )
+    with pytest.raises(exc):
+        userinfo("at-123")
 
 
 def test_logout_url(oidc_routes):
