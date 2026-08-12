@@ -17,10 +17,11 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import json
 import secrets
 import time
 from typing import Any, Dict, Mapping, Optional, Tuple, cast
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 
 import httpx
 from joserfc import jwt
@@ -35,9 +36,10 @@ from .errors import (
     UtaServerError,
     UtaTokenError,
 )
-from .types import Entitlement, UtaSession
+from .types import AppInfo, AppPrices, Entitlement, Price, UtaSession
 
 _ENTITLEMENT_PATH = "/licensing/entitlement/"
+_PUBLIC_APPS_PATH = "/api/v1/public/apps/"
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -84,6 +86,13 @@ def begin_login(
     if prompt:
         params["prompt"] = prompt
     if extra_params:
+        clashes = sorted(set(params) & set(extra_params))
+        if clashes:
+            raise ValueError(
+                "extra_params may not override reserved OAuth parameters "
+                f"({', '.join(clashes)}) — the paired complete_login() validates "
+                "against the internally generated values in flow_state"
+            )
         params.update(extra_params)
 
     auth_url = meta["authorization_endpoint"] + "?" + urlencode(params)
@@ -149,10 +158,12 @@ def refresh(refresh_token: Optional[str]) -> UtaSession:
     if not refresh_token:
         raise UtaTokenError("refresh_token is required")
     meta = _discovery.get_metadata(cfg)
+    # No ``scope`` param: RFC 6749 §6 then treats the request as asking for
+    # the original grant's scope, which may be narrower than cfg.scopes.
     token = _token_request(
         cfg,
         meta,
-        {"grant_type": "refresh_token", "refresh_token": refresh_token, "scope": cfg.scopes},
+        {"grant_type": "refresh_token", "refresh_token": refresh_token},
     )
     # Carry the old refresh token forward if rotation didn't return a new one.
     token.setdefault("refresh_token", refresh_token)
@@ -162,7 +173,10 @@ def refresh(refresh_token: Optional[str]) -> UtaSession:
         claims = _validate_id_token(cfg, id_token, nonce=None)
         return _session(token, sub=str(claims["sub"]), claims=dict(claims), id_token=id_token)
     info = userinfo(token["access_token"])
-    return _session(token, sub=str(info.get("sub", "")), claims=dict(info), id_token=None)
+    sub = info.get("sub")
+    if not sub:
+        raise UtaTokenError("userinfo response missing sub")
+    return _session(token, sub=str(sub), claims=dict(info), id_token=None)
 
 
 def userinfo(access_token: str) -> Dict[str, Any]:
@@ -182,8 +196,12 @@ def userinfo(access_token: str) -> Dict[str, Any]:
         raise UtaServerError(f"network error calling userinfo: {e}")
     if resp.status_code == 401:
         raise UtaTokenError(f"401 from userinfo: {resp.text}")
+    if resp.status_code == 403:
+        raise UtaPermissionError(f"403 from userinfo — token lacks required scope: {resp.text}")
     if resp.status_code >= 500:
         raise UtaServerError(f"{resp.status_code} from userinfo: {resp.text}")
+    if not (200 <= resp.status_code < 300):
+        raise UtaError(f"unexpected status {resp.status_code} from userinfo: {resp.text}")
     try:
         return cast(Dict[str, Any], resp.json())
     except ValueError as e:
@@ -265,6 +283,136 @@ async def get_entitlement_async(
 
 
 # ──────────────────────────────────────────────────────────────────────
+# Purchase links & public pricing (selling from your own website)
+# ──────────────────────────────────────────────────────────────────────
+
+def purchase_url(
+    price_id: str,
+    *,
+    next: Optional[str] = None,
+    ref: Optional[str] = None,
+    email: Optional[str] = None,
+) -> str:
+    """Build the hosted purchase (checkout) URL for a price. No network.
+
+    ``price_id`` is the opaque public price identifier (``prc_…``) — get
+    it from :func:`get_prices` (each :class:`~usethatapp.Price` carries a
+    ``public_id`` and a ready-made ``buy_url``).
+
+    ``next`` is where the buyer lands after a completed purchase. It must
+    be an HTTPS URL on your app's registered domain — this is validated
+    server-side, and an invalid value shows the buyer a "misconfigured
+    link" page. When omitted, the buyer is returned to your app's
+    registered Login URL. ``ref`` is an affiliate code. ``email`` prefills
+    the buyer's email on the checkout page.
+
+    Raises:
+        ValueError: if ``price_id`` is empty or whitespace.
+    """
+    if not price_id or not price_id.strip():
+        raise ValueError("price_id must be a non-empty string")
+    url = _config.resolve_api_url() + f"/buy/{quote(price_id.strip(), safe='')}/"
+    params: Dict[str, str] = {}
+    if next is not None:
+        params["next"] = next
+    if ref is not None:
+        params["ref"] = ref
+    if email is not None:
+        params["email"] = email
+    if not params:
+        return url
+    return url + "?" + urlencode(params)
+
+
+def manage_url(*, next: Optional[str] = None) -> str:
+    """Build the buyer's subscription-management page URL for this app. No network.
+
+    The page is scoped to this app (via ``UTA_CLIENT_ID``): the buyer can
+    review, update, or cancel their purchase there. ``next`` becomes the
+    page's "Back to app" link and gets the same server-side domain
+    validation as purchase links (HTTPS, your app's registered domain).
+
+    Raises:
+        UtaConfigError: if ``UTA_CLIENT_ID`` is not configured.
+    """
+    url = _config.resolve_api_url() + f"/manage/{_config.resolve_client_id()}/"
+    if next is None:
+        return url
+    return url + "?" + urlencode({"next": next})
+
+
+def get_app_info(*, timeout: Optional[float] = None) -> AppInfo:
+    """Fetch your app's public listing details. Anonymous — no auth needed.
+
+    Sends a plain GET to ``/api/v1/public/apps/{client_id}/``, so it works
+    anywhere — including a marketing site that never logs anyone in.
+    """
+    url = _public_app_url()
+    try:
+        resp = httpx.get(
+            url,
+            timeout=_public_timeout(timeout),
+            follow_redirects=True,
+        )
+    except httpx.RequestError as e:
+        raise UtaServerError(f"network error calling app info: {e}")
+    _raise_for_public_api_status(resp.status_code, resp.text, endpoint="app info")
+    return _parse_app_info(_json(resp))
+
+
+async def get_app_info_async(*, timeout: Optional[float] = None) -> AppInfo:
+    """Async variant of :func:`get_app_info`."""
+    url = _public_app_url()
+    try:
+        async with httpx.AsyncClient(
+            timeout=_public_timeout(timeout), follow_redirects=True
+        ) as client:
+            resp = await client.get(url)
+    except httpx.RequestError as e:
+        raise UtaServerError(f"network error calling app info: {e}")
+    _raise_for_public_api_status(resp.status_code, resp.text, endpoint="app info")
+    return _parse_app_info(_json(resp))
+
+
+def get_prices(*, timeout: Optional[float] = None) -> AppPrices:
+    """Fetch your app's live public price list. Anonymous — no auth needed.
+
+    Render your pricing UI from this instead of hardcoding amounts —
+    sellers can change prices at any time. Each :class:`~usethatapp.Price`
+    carries a ready-made hosted checkout ``buy_url`` and the opaque
+    ``product_id`` to gate on — compare it against
+    :attr:`Entitlement.product_public_id` (``Entitlement.product_id``
+    still carries the legacy UUID until the platform's identifier
+    cutover).
+    """
+    url = _public_app_url() + "prices/"
+    try:
+        resp = httpx.get(
+            url,
+            timeout=_public_timeout(timeout),
+            follow_redirects=True,
+        )
+    except httpx.RequestError as e:
+        raise UtaServerError(f"network error calling prices: {e}")
+    _raise_for_public_api_status(resp.status_code, resp.text, endpoint="prices")
+    return _parse_app_prices(_json(resp))
+
+
+async def get_prices_async(*, timeout: Optional[float] = None) -> AppPrices:
+    """Async variant of :func:`get_prices`."""
+    url = _public_app_url() + "prices/"
+    try:
+        async with httpx.AsyncClient(
+            timeout=_public_timeout(timeout), follow_redirects=True
+        ) as client:
+            resp = await client.get(url)
+    except httpx.RequestError as e:
+        raise UtaServerError(f"network error calling prices: {e}")
+    _raise_for_public_api_status(resp.status_code, resp.text, endpoint="prices")
+    return _parse_app_prices(_json(resp))
+
+
+# ──────────────────────────────────────────────────────────────────────
 # Internals
 # ──────────────────────────────────────────────────────────────────────
 
@@ -310,11 +458,30 @@ def _token_request(
     return cast(Dict[str, Any], payload)
 
 
+def _unverified_kid(id_token: str) -> Optional[str]:
+    """Read the JOSE header ``kid`` without verifying the signature."""
+    try:
+        header_b64 = id_token.split(".")[0]
+        padded = header_b64 + "=" * (-len(header_b64) % 4)
+        header = json.loads(base64.urlsafe_b64decode(padded))
+    except Exception:
+        return None
+    kid = header.get("kid") if isinstance(header, dict) else None
+    return kid if isinstance(kid, str) else None
+
+
 def _decode_id_token(cfg: "_config.UtaConfig", id_token: str) -> Any:
     """Decode + RS256 signature-verify, refetching JWKS once on key rotation."""
+    jwks = _discovery.get_jwks(cfg)
     try:
-        return jwt.decode(id_token, _discovery.get_jwks(cfg), algorithms=["RS256"])
+        return jwt.decode(id_token, jwks, algorithms=["RS256"])
     except JoseError:
+        # Refetch only when the token references a key we don't have cached
+        # (rotation). Any other failure is final — a refetch can't fix it,
+        # and would let every bad token trigger a network round-trip.
+        kid = _unverified_kid(id_token)
+        if kid is None or any(getattr(k, "kid", None) == kid for k in jwks.keys):
+            raise
         return jwt.decode(
             id_token, _discovery.get_jwks(cfg, force=True), algorithms=["RS256"]
         )
@@ -387,6 +554,85 @@ def _parse_entitlement(data: Mapping[str, Any]) -> Entitlement:
         status=str(data.get("status", "none")),
         is_free=bool(data.get("is_free", False)),
         period_end=data.get("period_end"),
+        product_public_id=data.get("product_public_id"),
+        raw=dict(data),
+    )
+
+
+def _public_app_url() -> str:
+    return (
+        _config.resolve_api_url()
+        + _PUBLIC_APPS_PATH
+        + _config.resolve_client_id()
+        + "/"
+    )
+
+
+def _public_timeout(timeout: Optional[float]) -> float:
+    return timeout if timeout is not None else float(
+        _config.resolve_request_timeout_seconds()
+    )
+
+
+def _raise_for_public_api_status(status: int, body_text: str, *, endpoint: str) -> None:
+    if 200 <= status < 300:
+        return
+    if status == 404:
+        raise UtaError(
+            f"404 from {endpoint} — the app is unknown, unpublished, or "
+            f"external sales is not enabled for it: {body_text}"
+        )
+    if status == 429:
+        raise UtaServerError(
+            f"429 from {endpoint} — rate limited (120 requests/minute per IP); "
+            f"retry with backoff: {body_text}"
+        )
+    if 500 <= status < 600:
+        raise UtaServerError(f"{status} from {endpoint}: {body_text}")
+    raise UtaError(f"unexpected status {status} from {endpoint}: {body_text}")
+
+
+def _parse_app_info(data: Mapping[str, Any]) -> AppInfo:
+    if not isinstance(data, Mapping):
+        raise UtaError("app info response is not a JSON object")
+    return AppInfo(
+        client_id=str(data.get("client_id", "")),
+        name=str(data.get("name", "")),
+        tagline=str(data.get("tagline", "")),
+        listing_mode=str(data.get("listing_mode", "")),
+        url=str(data.get("url", "")),
+        marketplace_url=str(data.get("marketplace_url", "")),
+        raw=dict(data),
+    )
+
+
+def _parse_price(data: Mapping[str, Any]) -> Price:
+    if not isinstance(data, Mapping):
+        raise UtaError("price entry is not a JSON object")
+    frequency = data.get("frequency")
+    return Price(
+        public_id=str(data.get("public_id", "")),
+        product_id=str(data.get("product_id", "")),
+        product_name=str(data.get("product_name", "")),
+        amount=str(data.get("amount", "")),
+        currency=str(data.get("currency", "")),
+        is_recurring=bool(data.get("is_recurring", False)),
+        frequency=None if frequency is None else str(frequency),
+        buy_url=str(data.get("buy_url", "")),
+    )
+
+
+def _parse_app_prices(data: Mapping[str, Any]) -> AppPrices:
+    if not isinstance(data, Mapping):
+        raise UtaError("prices response is not a JSON object")
+    raw_prices = data.get("prices", [])
+    if not isinstance(raw_prices, list):
+        raise UtaError("prices response has no 'prices' list")
+    return AppPrices(
+        client_id=str(data.get("client_id", "")),
+        app_name=str(data.get("app_name", "")),
+        has_free_tier=bool(data.get("has_free_tier", False)),
+        prices=tuple(_parse_price(p) for p in raw_prices),
         raw=dict(data),
     )
 
@@ -406,4 +652,10 @@ __all__ = [
     "logout_url",
     "get_entitlement",
     "get_entitlement_async",
+    "purchase_url",
+    "manage_url",
+    "get_app_info",
+    "get_app_info_async",
+    "get_prices",
+    "get_prices_async",
 ]

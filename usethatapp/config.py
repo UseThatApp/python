@@ -130,6 +130,32 @@ def load(force: bool = False) -> UtaConfig:
     return _cached
 
 
+def resolve_api_url() -> str:
+    """Resolve ``UTA_API_URL`` alone (default + trailing-slash normalize).
+
+    Used by the purchase/pricing helpers, which need only the API base URL
+    — not the full OIDC configuration (no redirect URI or secret).
+    """
+    return (_str("UTA_API_URL") or DEFAULT_API_URL).rstrip("/")
+
+
+def resolve_client_id() -> str:
+    """Resolve ``UTA_CLIENT_ID`` alone.
+
+    Raises:
+        UtaConfigError: if ``UTA_CLIENT_ID`` is missing.
+    """
+    client_id = _str("UTA_CLIENT_ID")
+    if not client_id:
+        raise UtaConfigError("UTA_CLIENT_ID is required")
+    return client_id
+
+
+def resolve_request_timeout_seconds() -> int:
+    """Resolve ``UTA_REQUEST_TIMEOUT_SECONDS`` alone (default ``10``)."""
+    return _int("UTA_REQUEST_TIMEOUT_SECONDS", 10)
+
+
 def reset_cache() -> None:
     """Clear the cached configuration. Mostly useful in tests."""
     global _cached
@@ -140,6 +166,9 @@ __all__ = [
     "UtaConfig",
     "load",
     "reset_cache",
+    "resolve_api_url",
+    "resolve_client_id",
+    "resolve_request_timeout_seconds",
     "DEFAULT_ISSUER",
     "DEFAULT_API_URL",
     "DEFAULT_SCOPES",

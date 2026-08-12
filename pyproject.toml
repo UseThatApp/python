@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "usethatapp"
-version = "2.0.0"
+version = "2.1.0"
 description = "Python SDK for usethatapp.com — OpenID Connect login and live license entitlement queries."
 readme = { file = "README.md", content-type = "text/markdown" }
 authors = [{ name = "UseThatApp", email = "support@usethatapp.com"}]

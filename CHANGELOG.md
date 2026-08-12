@@ -4,6 +4,77 @@ All notable changes to this project are documented in this file. This project ad
 [Semantic Versioning](https://semver.org/) and follows a clear, machine- and human-readable
 format inspired by "Keep a Changelog".
 
+## [2.1.0] - 2026-08-11
+
+Thin, dependency-free support for selling your app from your own website
+— hosted purchase links, the buyer management page, and the public
+(anonymous, CORS-enabled) app/pricing APIs — plus fixes to several
+identity-integrity and error-contract bugs in the 2.0 OIDC path.
+
+### Added
+
+- `purchase_url(price_id, *, next=, ref=, email=)` — build the hosted
+  checkout URL for a public price id (`prc_…`). Pure URL builder, no
+  network.
+- `manage_url(*, next=)` — build the buyer's subscription-management page
+  URL for your app. Pure URL builder, no network.
+- `get_app_info()` / `get_app_info_async()` → `AppInfo(client_id, name,
+  tagline, listing_mode, url, marketplace_url)`, from the anonymous
+  public apps API.
+- `get_prices()` / `get_prices_async()` → `AppPrices(client_id, app_name,
+  has_free_tier, prices)`, from the anonymous public pricing API —
+  render your pricing UI from this instead of hardcoding amounts.
+- New frozen dataclasses: `AppInfo`, `Price` (`public_id`, `product_id`,
+  `product_name`, `amount` — a decimal string, `currency`, `is_recurring`,
+  `frequency`, `buy_url`), and `AppPrices`.
+- `Entitlement.product_public_id` — the opaque public product identifier
+  (`prod_…`) matching `Price.product_id` from the pricing API. New
+  integrations should gate on it; `Entitlement.product_id` currently
+  carries a legacy UUID and will converge on the same `prod_…` value.
+
+### Changed
+
+- `refresh()` no longer sends a `scope` parameter. It previously sent the
+  full configured `UTA_SCOPES`, which is *broader* than the grant whenever
+  a login narrowed it via `begin_login(scopes=…)` — RFC 6749 §6 requires
+  the provider to reject that with `invalid_scope`, forcing a needless
+  interactive re-login. Omitting it asks for the original grant's scope.
+- `begin_login(extra_params=…)` now raises `ValueError` when `extra_params`
+  collides with a reserved OAuth parameter (`state`, `nonce`,
+  `code_challenge`, `redirect_uri`, …). Such a value previously landed in
+  the authorization URL while `flow_state` kept the internally generated
+  one, so the paired `complete_login()` always failed with a misleading
+  "state mismatch — possible CSRF" error.
+
+### Fixed
+
+- `userinfo()` returned the response body as the user's claims for any
+  status other than 401/5xx. A 403 or 400 error body (e.g.
+  `{"detail": "insufficient scope"}`) was therefore treated as a valid
+  claim set, and `refresh()`'s no-ID-token fallback turned it into a
+  `UtaSession` with `sub=""` — collapsing every affected user onto one
+  empty-string local key. 403 now raises `UtaPermissionError` and any
+  other non-2xx raises `UtaError`.
+- `refresh()` likewise accepted a 200 userinfo response with no `sub`,
+  again producing `sub=""`. It now raises `UtaTokenError`, matching what
+  `complete_login()` already did for the same case.
+- ID-token validation refetched the JWKS on *any* signature or decode
+  failure, so every malformed or forged token cost a blocking HTTPS
+  round-trip, and a network blip during that refetch surfaced
+  `UtaDiscoveryError` in place of the real validation error. The refetch
+  now happens only when the token references a `kid` that is not cached
+  (genuine key rotation).
+- `purchase_url()` validated `price_id` with `strip()` but interpolated
+  the raw value into the path, so a stray-whitespace or `/?#`-bearing id
+  produced a broken checkout link. It is now stripped and percent-encoded.
+- `get_prices()` / `get_prices_async()` raised a bare `AttributeError` when
+  a price entry was not a JSON object, escaping the documented "catch
+  `UtaError`" contract. Malformed entries now raise `UtaError`.
+- Gating guidance: the README quickstart and the `Entitlement.product_id`
+  docstring still pointed feature gating at `product_id` (a legacy UUID),
+  which locks out every paying customer. Both now point at
+  `product_public_id`.
+
 ## [2.0.0] - 2026-06-21
 
 Breaking rewrite onto standard OAuth2 / OpenID Connect. usethatapp.com is

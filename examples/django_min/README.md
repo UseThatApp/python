@@ -1,28 +1,37 @@
 # django_min — minimal UseThatApp Django example
 
-Boots a single-view Django app that accepts a launch envelope at
-`/uta/launch/` and calls `get_version()` for the resulting `user_key`.
+A single-file Django app wiring the OIDC login flow: `/login/` starts it,
+`/callback/` finishes it, `/` shows the user's live entitlement, and
+`/logout/` does RP-initiated sign-out.
+
+Documentation only — the SDK ships no Django-specific code. This demo runs
+locally with `DEBUG=True` and a throwaway session key; don't deploy it.
 
 ## Run
 
 ```bash
 pip install usethatapp django
 
-# Generate a developer keypair (one-time):
-python -c "
-from cryptography.hazmat.primitives.asymmetric import rsa
-from cryptography.hazmat.primitives import serialization
-k = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-open('dev.pem','wb').write(k.private_bytes(serialization.Encoding.PEM,
-    serialization.PrivateFormat.PKCS8, serialization.NoEncryption()))
-open('dev.pub','wb').write(k.public_key().public_bytes(
-    serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo))
-"
+export UTA_CLIENT_ID=...
+export UTA_CLIENT_SECRET=...        # omit for a public/PKCE client
+export UTA_REDIRECT_URI=http://localhost:8000/callback/
 
-export UTA_APP_ID=11111111-2222-3333-4444-555555555555
-export UTA_PRIVATE_KEY="$(cat dev.pem)"
-export UTA_MARKET_PUBLIC_KEY="$(cat market.pub)"
-
-python app.py runserver 0.0.0.0:8000
+python app.py runserver
 ```
 
+Register `http://localhost:8000/callback/` as a redirect URI for your
+OAuth client in the usethatapp.com developer dashboard first, or the
+provider rejects the login.
+
+## What to look at
+
+| Where | The framework-specific bit |
+|-------|----------------------------|
+| `login()` | Stash `flow_state` from `begin_login()` in the session, redirect to the returned URL. |
+| `callback()` | Read `code`/`state` off `request.GET` (and handle `?error=` on cancel), pass them plus `flow_state` to `complete_login()`. |
+| `home()` | Call `get_entitlement(access_token)`; on `UtaTokenError` drop the token and fall back to the logged-out view. |
+| `logout()` | Redirect to `logout_url(...)` **without** clearing the session — see the sign-out note in the root [README](../../README.md). |
+
+Identity is `session.sub`, the pairwise pseudonymous user id — stable
+within your app, never correlatable across apps, never PII. Key your user
+records off it.

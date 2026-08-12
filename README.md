@@ -66,8 +66,17 @@ from usethatapp import (
     refresh,            # (refresh_token) -> UtaSession
     userinfo,           # (access_token) -> {"sub": ...}
     logout_url,         # (id_token=, post_logout_redirect_uri=) -> str
+    purchase_url,       # (price_id, *, next=, ref=, email=) -> str  (no network)
+    manage_url,         # (*, next=) -> str                          (no network)
+    get_app_info,       # () -> AppInfo        (anonymous public API)
+    get_app_info_async,
+    get_prices,         # () -> AppPrices      (anonymous public API)
+    get_prices_async,
     UtaSession,         # sub, access_token, refresh_token, id_token, expires_at, ...
-    Entitlement,        # entitled, version, product_id, status, is_free, period_end
+    Entitlement,        # entitled, version, product_id, product_public_id, status, ...
+    AppInfo,            # client_id, name, tagline, listing_mode, url, marketplace_url
+    Price,              # public_id, product_id, product_name, amount, currency, ...
+    AppPrices,          # client_id, app_name, has_free_tier, prices
     # errors:
     UtaError, UtaConfigError, UtaDiscoveryError, UtaAuthError,
     UtaTokenError, UtaPermissionError, UtaServerError,
@@ -96,9 +105,10 @@ session = complete_login(
 save_to_session("uta_sub", session.sub)
 save_to_session("uta_access_token", session.access_token)
 
-# 3) Anywhere you gate features:
+# 3) Anywhere you gate features. Gate on product_public_id — the opaque
+#    prod_… id that matches Price.product_id from get_prices():
 ent = get_entitlement(load_from_session("uta_access_token"))
-if ent.entitled and ent.product_id == "...":
+if ent.entitled and ent.product_public_id == "prod_...":
     ...
 ```
 
@@ -117,6 +127,54 @@ are documentation only — nothing framework-specific ships in the package.
 | 5xx    | `UtaServerError`     | Retriable with backoff.                       |
 
 All inherit from `UtaError` — catch that for a single `except` clause.
+
+## Purchase links & pricing
+
+usethatapp.com can sell your app **from your own website**: hosted
+checkout links, a buyer management page, and a public pricing API. The
+SDK helpers are thin — the URL builders make no network calls, and the
+two GET functions hit **anonymous** endpoints (no auth, CORS-enabled), so
+they work even on a marketing page that never logs anyone in.
+
+Gate an upgrade CTA on the entitlement, then send the user to checkout:
+
+```python
+from usethatapp import get_entitlement, manage_url, purchase_url
+
+ent = get_entitlement(load_from_session("uta_access_token"))
+if not ent.entitled:
+    # Hosted checkout. `next` must be an HTTPS URL on your registered
+    # domain (validated server-side); omit it to land on your Login URL.
+    return redirect(purchase_url("prc_...", next="https://yourapp.example/welcome"))
+
+# Existing buyers manage (or cancel) their plan on usethatapp.com:
+billing_link = manage_url(next="https://yourapp.example/account")
+```
+
+Render pricing from the live API instead of hardcoding — sellers can
+change prices anytime:
+
+```python
+from usethatapp import get_prices
+
+pricing = get_prices()          # anonymous — no token needed
+for price in pricing.prices:
+    per = f"/{price.frequency}" if price.is_recurring else " one-time"
+    print(f"{price.product_name}: {price.amount} {price.currency}{per}")
+    print(f"  buy: {price.buy_url}")   # ready-made hosted checkout link
+```
+
+`Price.amount` is a decimal **string** (e.g. `"10.00"`) — parse with
+`decimal.Decimal` if you need arithmetic. `Price.product_id` is the
+opaque `prod_…` identifier to gate features on after purchase — compare
+it against **`Entitlement.product_public_id`** (`Entitlement.product_id`
+still carries the legacy UUID until the platform's identifier cutover,
+after which both fields carry the same `prod_…` value).
+
+Notes: UseThatApp is the **merchant of record** (checkout, tax, refunds
+are handled for you). Purchases are currently **US-only**. External
+sales is in beta — buy links return **404 until it's enabled for your
+app**. Full guide: [docs.usethatapp.com](https://docs.usethatapp.com).
 
 ## Signing out
 

@@ -1,0 +1,4 @@
+# setuptools' sdist defaults pick up tests/test_*.py but not conftest.py or
+# the package marker, which ships a test suite that cannot be collected.
+include CHANGELOG.md
+recursive-include tests *.py

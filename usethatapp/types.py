@@ -9,7 +9,7 @@ but cannot be correlated against other apps.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 
 @dataclass(frozen=True)
@@ -61,7 +61,10 @@ class Entitlement:
     """Product/plan display name, or ``None`` when not entitled."""
 
     product_id: Optional[str]
-    """Stable product UUID — prefer this over ``version`` for gating logic."""
+    """Legacy UUID product identifier. For gating, prefer
+    :attr:`product_public_id` — it matches :attr:`Price.product_id` from the
+    pricing API. After the platform's identifier cutover this field carries
+    the same opaque ``prod_…`` value as ``product_public_id``."""
 
     status: str
     """``active``/``trialing``/``one_time_active``/``free``/``none``/…"""
@@ -75,5 +78,108 @@ class Entitlement:
     raw: Dict[str, Any] = field(default_factory=dict)
     """The full decoded response, for forward-compatibility."""
 
+    # Appended AFTER ``raw`` deliberately: inserting a field ahead of it
+    # would silently rebind positional constructor arguments written
+    # against 2.0 (``Entitlement(..., period_end, raw_dict)``), landing the
+    # raw dict in this field with no error. New fields go on the end.
+    product_public_id: Optional[str] = None
+    """Opaque public product identifier (``prod_…``) — matches
+    :attr:`Price.product_id` from the pricing API. New integrations should
+    gate on this field."""
 
-__all__ = ["UtaSession", "Entitlement"]
+
+@dataclass(frozen=True)
+class AppInfo:
+    """Public listing details for an app, from the anonymous apps API.
+
+    Returned by :func:`usethatapp.get_app_info`. The endpoint needs no
+    authentication, so this is safe to call from anywhere — including a
+    plain marketing site that never logs anyone in.
+    """
+
+    client_id: str
+    """The app's OAuth client id (same value as ``UTA_CLIENT_ID``)."""
+
+    name: str
+    """The app's display name."""
+
+    tagline: str
+    """Short marketing tagline set by the seller."""
+
+    listing_mode: str
+    """``marketplace`` or ``external`` — where the app is sold."""
+
+    url: str
+    """The app's own website URL."""
+
+    marketplace_url: str
+    """The app's listing page on usethatapp.com."""
+
+    raw: Dict[str, Any] = field(default_factory=dict)
+    """The full decoded response, for forward-compatibility."""
+
+
+@dataclass(frozen=True)
+class Price:
+    """One purchasable price for an app, from the anonymous pricing API.
+
+    Render prices from :func:`usethatapp.get_prices` instead of hardcoding
+    them — sellers can change prices at any time. ``product_id`` here is
+    the opaque ``prod_…`` identifier to gate on: compare it against
+    :attr:`Entitlement.product_public_id`.
+    """
+
+    public_id: str
+    """Opaque public price identifier (``prc_…``); pass to :func:`usethatapp.purchase_url`."""
+
+    product_id: str
+    """Opaque product identifier (``prod_…``) — matches
+    :attr:`Entitlement.product_public_id` for gating (and
+    ``Entitlement.product_id`` after the platform's identifier cutover)."""
+
+    product_name: str
+    """The product/plan display name."""
+
+    amount: str
+    """Decimal amount as a string (e.g. ``"10.00"``) — kept as ``str`` so
+    no float precision is imposed on you. Parse with :class:`decimal.Decimal`."""
+
+    currency: str
+    """Lowercase ISO currency code (e.g. ``usd``)."""
+
+    is_recurring: bool
+    """True for subscriptions, False for one-time purchases."""
+
+    frequency: Optional[str]
+    """Billing interval — ``day``/``week``/``month``/``year`` — or ``None``
+    for one-time purchases."""
+
+    buy_url: str
+    """Ready-made hosted checkout link for this price (what
+    :func:`usethatapp.purchase_url` builds, minus the optional params)."""
+
+
+@dataclass(frozen=True)
+class AppPrices:
+    """An app's full public price list, from the anonymous pricing API.
+
+    Returned by :func:`usethatapp.get_prices`.
+    """
+
+    client_id: str
+    """The app's OAuth client id (same value as ``UTA_CLIENT_ID``)."""
+
+    app_name: str
+    """The app's display name."""
+
+    has_free_tier: bool
+    """True if the app offers a free tier (no purchase needed to start)."""
+
+    prices: Tuple[Price, ...]
+    """Every purchasable price, ready to render as a pricing table."""
+
+    raw: Dict[str, Any] = field(default_factory=dict)
+    """The full decoded response, for forward-compatibility."""
+
+
+__all__ = ["UtaSession", "Entitlement", "AppInfo", "Price", "AppPrices"]
