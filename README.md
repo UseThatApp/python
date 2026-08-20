@@ -79,7 +79,8 @@ from usethatapp import (
     AppPrices,          # client_id, app_name, has_free_tier, prices
     # errors:
     UtaError, UtaConfigError, UtaDiscoveryError, UtaAuthError,
-    UtaTokenError, UtaPermissionError, UtaServerError,
+    UtaTokenError, UtaPermissionError, UtaServiceNotEnabledError,
+    UtaServerError,
 )
 ```
 
@@ -119,14 +120,17 @@ are documentation only — nothing framework-specific ships in the package.
 
 `get_entitlement` maps status codes to typed exceptions:
 
-| Status | Exception            | Meaning                                       |
-|--------|----------------------|-----------------------------------------------|
-| 401    | `UtaTokenError`      | Access token invalid/expired — re-auth/refresh.|
-| 403    | `UtaPermissionError` | Token lacks the `entitlements` scope.         |
-| 400    | `UtaError`           | Client not linked to an app (misconfig).      |
-| 5xx    | `UtaServerError`     | Retriable with backoff.                       |
+| Status | Exception                                     | Meaning                                       |
+|--------|-----------------------------------------------|-----------------------------------------------|
+| 401    | `UtaTokenError`                               | Access token invalid/expired — re-auth/refresh.|
+| 403 (`insufficient_scope`)   | `UtaPermissionError`            | Token lacks the `entitlements` scope.         |
+| 403 (`service_not_enabled`)  | `UtaServiceNotEnabledError`     | The Auth & Entitlement add-on is switched off for this app. No retry, refresh, or re-consent will help — enable it on the app's manage page at usethatapp.com (Integration panel). |
+| 400    | `UtaError`                                    | Client not linked to an app (misconfig).      |
+| 5xx    | `UtaServerError`                              | Retriable with backoff.                       |
 
 All inherit from `UtaError` — catch that for a single `except` clause.
+`UtaServiceNotEnabledError` subclasses `UtaPermissionError`, so existing
+`except UtaPermissionError` blocks keep working unchanged.
 
 ## Purchase links & pricing
 

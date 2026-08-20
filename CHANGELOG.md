@@ -4,6 +4,18 @@ All notable changes to this project are documented in this file. This project ad
 [Semantic Versioning](https://semver.org/) and follows a clear, machine- and human-readable
 format inspired by "Keep a Changelog".
 
+## [Unreleased]
+
+### Added
+
+- `UtaServiceNotEnabledError` (subclass of `UtaPermissionError`), raised
+  when the entitlement endpoint returns `403 service_not_enabled`: the
+  app's developer has not enabled the Auth & Entitlement add-on. The
+  previous behavior mislabeled this case as a missing `entitlements`
+  scope; the new error says the actual fix (enable the add-on on the
+  app's manage page). Existing `except UtaPermissionError` blocks catch
+  it unchanged.
+
 ## [2.1.0] - 2026-08-11
 
 Thin, dependency-free support for selling your app from your own website

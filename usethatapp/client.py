@@ -34,6 +34,7 @@ from .errors import (
     UtaError,
     UtaPermissionError,
     UtaServerError,
+    UtaServiceNotEnabledError,
     UtaTokenError,
 )
 from .types import AppInfo, AppPrices, Entitlement, Price, UtaSession
@@ -538,10 +539,34 @@ def _raise_for_entitlement_status(status: int, body_text: str) -> None:
     if status == 401:
         raise UtaTokenError(f"401 from entitlement — access token invalid/expired: {body_text}")
     if status == 403:
+        # Two distinct 403s (see the server's EntitlementView contract):
+        # insufficient_scope (fix the requested scopes) vs
+        # service_not_enabled (the developer must enable the add-on —
+        # nothing in this process will fix it).
+        if _error_code(body_text) == "service_not_enabled":
+            raise UtaServiceNotEnabledError(
+                "403 from entitlement — the entitlement service is not "
+                "enabled for this app. Enable the Auth & Entitlement "
+                "add-on on the app's manage page at usethatapp.com "
+                f"(Integration panel): {body_text}"
+            )
         raise UtaPermissionError(f"403 from entitlement — missing 'entitlements' scope: {body_text}")
     if 500 <= status < 600:
         raise UtaServerError(f"{status} from entitlement: {body_text}")
     raise UtaError(f"unexpected status {status} from entitlement: {body_text}")
+
+
+def _error_code(body_text: str) -> str:
+    """The ``error`` field of a JSON error body, or "" when the body is
+    not JSON / not a mapping / has no string error code."""
+    try:
+        data = json.loads(body_text)
+    except ValueError:
+        return ""
+    if not isinstance(data, dict):
+        return ""
+    code = data.get("error")
+    return code if isinstance(code, str) else ""
 
 
 def _parse_entitlement(data: Mapping[str, Any]) -> Entitlement:

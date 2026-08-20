@@ -19,6 +19,7 @@ from usethatapp.errors import (
     UtaAuthError,
     UtaError,
     UtaPermissionError,
+    UtaServiceNotEnabledError,
     UtaServerError,
     UtaTokenError,
 )
@@ -170,6 +171,35 @@ def test_get_entitlement_status_mapping(oidc_routes, status, exc):
     )
     with pytest.raises(exc):
         get_entitlement("at-123")
+
+
+def test_get_entitlement_service_not_enabled(oidc_routes):
+    """A 403 whose body says service_not_enabled is the developer's to
+    fix (enable the add-on) — it must NOT be reported as a scope
+    problem, but must stay catchable as UtaPermissionError."""
+    oidc_routes.get(API_URL + "/licensing/entitlement/").mock(
+        return_value=httpx.Response(403, json={
+            "error": "service_not_enabled",
+            "error_description": "The developer has not enabled the "
+                                 "entitlement service for this app.",
+        })
+    )
+    with pytest.raises(UtaServiceNotEnabledError, match="manage page"):
+        get_entitlement("at-123")
+    assert issubclass(UtaServiceNotEnabledError, UtaPermissionError)
+
+
+def test_get_entitlement_scope_403_still_permission_error(oidc_routes):
+    """The pre-existing 403 (insufficient_scope) keeps its exact class —
+    not the new subclass — so callers can tell the two apart."""
+    oidc_routes.get(API_URL + "/licensing/entitlement/").mock(
+        return_value=httpx.Response(403, json={
+            "error": "insufficient_scope", "scope": "entitlements",
+        })
+    )
+    with pytest.raises(UtaPermissionError) as excinfo:
+        get_entitlement("at-123")
+    assert type(excinfo.value) is UtaPermissionError
 
 
 @pytest.mark.asyncio

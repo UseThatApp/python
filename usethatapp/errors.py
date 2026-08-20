@@ -38,7 +38,24 @@ class UtaTokenError(UtaError):
 
 
 class UtaPermissionError(UtaError):
-    """The token is valid but lacks the required scope (entitlement 403)."""
+    """The token is valid but the request is not permitted (403).
+
+    Usually a missing ``entitlements`` scope. When the server says the
+    app's developer has not enabled the entitlement service, the more
+    specific :class:`UtaServiceNotEnabledError` subclass is raised
+    instead — existing ``except UtaPermissionError`` blocks still catch
+    it.
+    """
+
+
+class UtaServiceNotEnabledError(UtaPermissionError):
+    """The app's developer has not enabled the Auth & Entitlement add-on.
+
+    The token is fine and no retry, refresh, or re-consent will help:
+    the entitlement service is switched off for this app. Enable it on
+    the app's manage page at usethatapp.com (Integration panel →
+    "Turn on entitlement").
+    """
 
 
 class UtaServerError(UtaError):
@@ -55,5 +72,6 @@ __all__ = [
     "UtaAuthError",
     "UtaTokenError",
     "UtaPermissionError",
+    "UtaServiceNotEnabledError",
     "UtaServerError",
 ]

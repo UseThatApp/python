@@ -39,6 +39,7 @@ from .errors import (
     UtaDiscoveryError,
     UtaError,
     UtaPermissionError,
+    UtaServiceNotEnabledError,
     UtaServerError,
     UtaTokenError,
 )
@@ -77,5 +78,6 @@ __all__ = [
     "UtaAuthError",
     "UtaTokenError",
     "UtaPermissionError",
+    "UtaServiceNotEnabledError",
     "UtaServerError",
 ]
