@@ -58,6 +58,29 @@ class UtaServiceNotEnabledError(UtaPermissionError):
     """
 
 
+class UtaNotFoundError(UtaError):
+    """The License Key API could not find what you referenced.
+
+    ``code`` says what: ``unknown_key`` (a key we never issued — or
+    another app's), ``unknown_order`` (bad/expired order ref), or
+    ``unknown_license`` (no such license id for your app).
+    """
+
+    def __init__(self, message: str, code: str = ""):
+        super().__init__(message)
+        self.code = code
+
+
+class UtaOrderProcessingError(UtaError):
+    """The order is genuine but its license hasn't landed yet (payment
+    webhooks run seconds behind checkout). Retry briefly."""
+
+
+class UtaLicenseCanceledError(UtaError):
+    """The license is terminally canceled — its key cannot be
+    regenerated."""
+
+
 class UtaServerError(UtaError):
     """A usethatapp.com endpoint returned 5xx, or the network failed.
 
@@ -73,5 +96,8 @@ __all__ = [
     "UtaTokenError",
     "UtaPermissionError",
     "UtaServiceNotEnabledError",
+    "UtaNotFoundError",
+    "UtaOrderProcessingError",
+    "UtaLicenseCanceledError",
     "UtaServerError",
 ]

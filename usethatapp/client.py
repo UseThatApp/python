@@ -31,13 +31,17 @@ from . import config as _config
 from . import discovery as _discovery
 from .errors import (
     UtaAuthError,
+    UtaConfigError,
     UtaError,
+    UtaLicenseCanceledError,
+    UtaNotFoundError,
+    UtaOrderProcessingError,
     UtaPermissionError,
     UtaServerError,
     UtaServiceNotEnabledError,
     UtaTokenError,
 )
-from .types import AppInfo, AppPrices, Entitlement, Price, UtaSession
+from .types import AppInfo, AppPrices, Entitlement, LicenseState, Price, UtaSession
 
 _ENTITLEMENT_PATH = "/licensing/entitlement/"
 _PUBLIC_APPS_PATH = "/api/v1/public/apps/"
@@ -67,12 +71,17 @@ def begin_login(
     callback. ``flow_state`` is a plain JSON-serializable dict.
     """
     cfg = _config.load()
+    redirect = redirect_uri or cfg.redirect_uri
+    if not redirect:
+        raise UtaConfigError(
+            "UTA_REDIRECT_URI is required for the login flow (only the "
+            "License Key API works without it)"
+        )
     meta = _discovery.get_metadata(cfg)
 
     code_verifier = secrets.token_urlsafe(64)
     state = secrets.token_urlsafe(32)
     nonce = secrets.token_urlsafe(32)
-    redirect = redirect_uri or cfg.redirect_uri
 
     params: Dict[str, str] = {
         "response_type": "code",
@@ -684,3 +693,153 @@ __all__ = [
     "get_prices",
     "get_prices_async",
 ]
+
+
+# ──────────────────────────────────────────────────────────────────────
+# License Key API (bring-your-own-auth MoR verification)
+# ──────────────────────────────────────────────────────────────────────
+#
+# Server-to-server only: authenticated with your app's OAuth client id
+# and secret over HTTP Basic. No end user, no browser, no OIDC — this is
+# how an app that keeps its own auth verifies UseThatApp purchases.
+
+def _license_api_auth(cfg) -> dict:
+    import base64 as _b64
+
+    if not cfg.client_secret:
+        raise UtaConfigError(
+            "UTA_CLIENT_SECRET is required for the License Key API "
+            "(server-side calls authenticate with your app's client "
+            "credentials)"
+        )
+    token = _b64.b64encode(
+        f"{cfg.client_id}:{cfg.client_secret}".encode()
+    ).decode()
+    return {"Authorization": f"Basic {token}"}
+
+
+def _raise_for_license_api_status(status: int, body_text: str) -> None:
+    if 200 <= status < 300:
+        return
+    code = _error_code(body_text)
+    if status == 401:
+        raise UtaConfigError(
+            f"client credentials rejected — check UTA_CLIENT_ID / "
+            f"UTA_CLIENT_SECRET: {body_text}"
+        )
+    if status == 404:
+        raise UtaNotFoundError(
+            f"{code or 'not found'}: {body_text}", code=code
+        )
+    if status == 409:
+        raise UtaLicenseCanceledError(
+            f"license is canceled — its key cannot be regenerated: {body_text}"
+        )
+    if status == 400:
+        raise UtaError(f"400 from license API: {body_text}")
+    if status == 429:
+        raise UtaServerError(
+            f"429 from license API — rate limited, retry with backoff: {body_text}"
+        )
+    if 500 <= status < 600:
+        raise UtaServerError(f"{status} from license API: {body_text}")
+    raise UtaError(f"unexpected status {status} from license API: {body_text}")
+
+
+def _parse_license_state(data: Mapping[str, Any]) -> LicenseState:
+    if not isinstance(data, Mapping):
+        raise UtaError("license API response is not a JSON object")
+    return LicenseState(
+        entitled=bool(data.get("entitled")),
+        status=str(data.get("status") or ""),
+        license_id=str(data.get("license_id") or ""),
+        product_public_id=str(data.get("product_public_id") or ""),
+        period_end=data.get("period_end"),
+        canceled_at=data.get("canceled_at"),
+        license_key=data.get("license_key"),
+        rotated_at=data.get("rotated_at"),
+    )
+
+
+def _license_api_request(
+    method: str,
+    path: str,
+    *,
+    json_body: Optional[dict] = None,
+    timeout: Optional[float] = None,
+) -> LicenseState:
+    cfg = _config.load()
+    try:
+        resp = httpx.request(
+            method,
+            cfg.api_url + path,
+            json=json_body,
+            headers=_license_api_auth(cfg),
+            timeout=timeout or cfg.request_timeout_seconds,
+            follow_redirects=False,
+        )
+    except httpx.RequestError as e:
+        raise UtaServerError(f"network error calling license API: {e}")
+    if resp.status_code == 202:
+        raise UtaOrderProcessingError(
+            "order confirmed but its license hasn't landed yet — retry "
+            "in a few seconds"
+        )
+    _raise_for_license_api_status(resp.status_code, resp.text)
+    return _parse_license_state(_json(resp))
+
+
+def validate_license_key(key: str, *, timeout: Optional[float] = None) -> LicenseState:
+    """The live state of a license key your user presented.
+
+    Raises :class:`UtaNotFoundError` (``code="unknown_key"``) for a key
+    UseThatApp never issued for your app. A canceled purchase does NOT
+    raise — it returns ``entitled=False, status="canceled"``, because a
+    key you once accepted deserves a lifecycle answer, not an error.
+    """
+    if not key or not isinstance(key, str):
+        raise UtaError("key must be a non-empty string")
+    return _license_api_request(
+        "POST", "/api/v1/licenses/validate", json_body={"key": key},
+        timeout=timeout,
+    )
+
+
+def get_order(ref: str, *, timeout: Optional[float] = None) -> LicenseState:
+    """Exchange the ``uta_order`` handback for the buyer's license key.
+
+    ``ref`` arrives as the ``uta_order`` query parameter on your
+    post-checkout return URL. The result carries ``license_key`` — link
+    it to your own signed-in user and you never need email matching.
+    Raises :class:`UtaOrderProcessingError` when the payment cleared but
+    the license hasn't landed yet (retry briefly), and
+    :class:`UtaNotFoundError` (``code="unknown_order"``) for a bad or
+    expired ref.
+    """
+    if not ref or not isinstance(ref, str):
+        raise UtaError("ref must be a non-empty string")
+    return _license_api_request(
+        "GET", "/api/v1/orders/" + quote(ref, safe=""), timeout=timeout
+    )
+
+
+def regenerate_license_key(
+    license_id: str, *, timeout: Optional[float] = None
+) -> LicenseState:
+    """Mint a replacement key for one license; the old key dies now.
+
+    The compromise kill switch — a merely-lost key is self-serve for the
+    buyer on their UseThatApp management page, so reach for this only
+    when a key must be revoked. The result's ``license_key`` is the new
+    key; deliver it to your customer yourself. Raises
+    :class:`UtaNotFoundError` (``code="unknown_license"``) for a license
+    that isn't your app's, and :class:`UtaLicenseCanceledError` for a
+    terminally canceled one.
+    """
+    if not license_id or not isinstance(license_id, str):
+        raise UtaError("license_id must be a non-empty string")
+    return _license_api_request(
+        "POST",
+        f"/api/v1/licenses/{quote(str(license_id), safe='')}/regenerate-key",
+        timeout=timeout,
+    )

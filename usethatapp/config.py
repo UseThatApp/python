@@ -106,9 +106,10 @@ def load(force: bool = False) -> UtaConfig:
     if not client_id:
         raise UtaConfigError("UTA_CLIENT_ID is required")
 
-    redirect_uri = _str("UTA_REDIRECT_URI")
-    if not redirect_uri:
-        raise UtaConfigError("UTA_REDIRECT_URI is required")
+    # Required only for the OIDC login flow; a keys-mode integration
+    # (License Key API, add-on off) never redirects a browser, so its
+    # absence is enforced in begin_login(), not here.
+    redirect_uri = _str("UTA_REDIRECT_URI") or ""
 
     # Optional: omit for a public (browser/native) client using PKCE only.
     client_secret = _secret_or_path("UTA_CLIENT_SECRET", "UTA_CLIENT_SECRET_PATH")

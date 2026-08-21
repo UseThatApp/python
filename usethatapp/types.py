@@ -183,3 +183,25 @@ class AppPrices:
 
 
 __all__ = ["UtaSession", "Entitlement", "AppInfo", "Price", "AppPrices"]
+
+
+@dataclass(frozen=True)
+class LicenseState:
+    """One license's live state from the License Key API (bring-your-
+    own-auth verification — no end-user OIDC anywhere).
+
+    ``license_key`` is set only by :func:`usethatapp.get_order` and
+    :func:`usethatapp.regenerate_license_key` — the two calls that hand
+    you key material. Cache ``entitled`` against ``period_end`` and
+    re-validate on your own cadence; a canceled license flips on the
+    next validation.
+    """
+
+    entitled: bool
+    status: str
+    license_id: str
+    product_public_id: str
+    period_end: Optional[str] = None
+    canceled_at: Optional[str] = None
+    license_key: Optional[str] = None
+    rotated_at: Optional[str] = None

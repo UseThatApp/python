@@ -33,9 +33,15 @@ def test_missing_client_id(monkeypatch):
 
 
 def test_missing_redirect_uri(monkeypatch):
+    # Keys-mode integrations never redirect a browser, so load()
+    # tolerates a missing redirect URI; begin_login() enforces it.
     monkeypatch.delenv("UTA_REDIRECT_URI", raising=False)
+    from usethatapp import begin_login
+    from usethatapp import config as _cfg
+    _cfg.reset_cache()
+    assert _cfg.load().redirect_uri == ""
     with pytest.raises(UtaConfigError, match="UTA_REDIRECT_URI"):
-        uta_config.load(force=True)
+        begin_login()
 
 
 def test_public_client_has_no_secret(monkeypatch):

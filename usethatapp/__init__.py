@@ -25,6 +25,9 @@ from .client import (
     get_app_info_async,
     get_entitlement,
     get_entitlement_async,
+    get_order,
+    regenerate_license_key,
+    validate_license_key,
     get_prices,
     get_prices_async,
     logout_url,
@@ -43,7 +46,14 @@ from .errors import (
     UtaServerError,
     UtaTokenError,
 )
-from .types import AppInfo, AppPrices, Entitlement, Price, UtaSession
+from .types import (
+    AppInfo,
+    AppPrices,
+    Entitlement,
+    LicenseState,
+    Price,
+    UtaSession,
+)
 
 __version__ = "2.1.0"
 
@@ -58,6 +68,10 @@ __all__ = [
     # entitlement
     "get_entitlement",
     "get_entitlement_async",
+    # license key API (bring-your-own-auth MoR verification)
+    "validate_license_key",
+    "get_order",
+    "regenerate_license_key",
     # purchase links & public pricing
     "purchase_url",
     "manage_url",
@@ -68,6 +82,7 @@ __all__ = [
     # types
     "UtaSession",
     "Entitlement",
+    "LicenseState",
     "AppInfo",
     "Price",
     "AppPrices",

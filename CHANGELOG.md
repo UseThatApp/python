@@ -8,6 +8,18 @@ format inspired by "Keep a Changelog".
 
 ### Added
 
+- **License Key API** (server-side, bring-your-own-auth MoR
+  verification): `validate_license_key(key)`, `get_order(ref)` for the
+  `uta_order` checkout handback, and `regenerate_license_key(license_id)`
+  as the compromise kill switch — all authenticated with your app's
+  client credentials (`UTA_CLIENT_SECRET` required; `UTA_REDIRECT_URI`
+  is no longer needed unless you use the OIDC login flow). New
+  `LicenseState` dataclass and typed errors: `UtaNotFoundError` (with
+  `.code`), `UtaOrderProcessingError`, `UtaLicenseCanceledError`.
+- `config.load()` no longer requires `UTA_REDIRECT_URI`; `begin_login()`
+  raises `UtaConfigError` if it is missing — keys-mode integrations
+  never redirect a browser.
+
 - `UtaServiceNotEnabledError` (subclass of `UtaPermissionError`), raised
   when the entitlement endpoint returns `403 service_not_enabled`: the
   app's developer has not enabled the Auth & Entitlement add-on. The
