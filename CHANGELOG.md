@@ -6,7 +6,14 @@ format inspired by "Keep a Changelog".
 
 ## [Unreleased]
 
+## [2.2.0] - 2026-08-22
+
 ### Added
+
+- `LicenseState.product_id` — an equal-valued alias of
+  `product_public_id` (the platform's post-cutover `prod_…` pair, the
+  same contract as the entitlement endpoint), with a parser fallback
+  against servers that predate the cutover.
 
 - **License Key API** (server-side, bring-your-own-auth MoR
   verification): `validate_license_key(key)`, `get_order(ref)` for the
@@ -22,11 +29,18 @@ format inspired by "Keep a Changelog".
 
 - `UtaServiceNotEnabledError` (subclass of `UtaPermissionError`), raised
   when the entitlement endpoint returns `403 service_not_enabled`: the
-  app's developer has not enabled the Auth & Entitlement add-on. The
+  app's developer has not enabled the Hosted sign-in add-on. The
   previous behavior mislabeled this case as a missing `entitlements`
   scope; the new error says the actual fix (enable the add-on on the
   app's manage page). Existing `except UtaPermissionError` blocks catch
   it unchanged.
+
+### Fixed
+
+- `UtaNotFoundError`, `UtaOrderProcessingError`, and
+  `UtaLicenseCanceledError` are now exported from the package root —
+  they were defined and documented but not importable as
+  `from usethatapp import …`.
 
 ## [2.1.0] - 2026-08-11
 
