@@ -758,6 +758,11 @@ def _parse_license_state(data: Mapping[str, Any]) -> LicenseState:
         canceled_at=data.get("canceled_at"),
         license_key=data.get("license_key"),
         rotated_at=data.get("rotated_at"),
+        # Alias pair: fall back to product_public_id against a server
+        # that predates the identifier cutover.
+        product_id=str(
+            data.get("product_id") or data.get("product_public_id") or ""
+        ),
     )
 
 

@@ -172,3 +172,25 @@ def test_empty_inputs_are_rejected_locally():
         get_order("")
     with pytest.raises(UtaError):
         regenerate_license_key("")
+
+
+def test_product_id_is_an_equal_valued_alias(respx_mock):
+    # Post-cutover pair: product_id == product_public_id (prod_…), the
+    # same contract as the entitlement endpoint.
+    respx_mock.post(API_URL + "/api/v1/licenses/validate").mock(
+        return_value=httpx.Response(
+            200, json={**STATE, "product_id": STATE["product_public_id"]}
+        )
+    )
+    state = validate_license_key("key_abc")
+    assert state.product_id == state.product_public_id
+    assert state.product_id.startswith("prod_")
+
+
+def test_product_id_falls_back_against_precutover_server(respx_mock):
+    # A server that omits product_id still yields the alias pair.
+    respx_mock.post(API_URL + "/api/v1/licenses/validate").mock(
+        return_value=httpx.Response(200, json=STATE)
+    )
+    state = validate_license_key("key_abc")
+    assert state.product_id == STATE["product_public_id"]

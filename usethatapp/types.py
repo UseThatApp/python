@@ -61,10 +61,10 @@ class Entitlement:
     """Product/plan display name, or ``None`` when not entitled."""
 
     product_id: Optional[str]
-    """Legacy UUID product identifier. For gating, prefer
-    :attr:`product_public_id` — it matches :attr:`Price.product_id` from the
-    pricing API. After the platform's identifier cutover this field carries
-    the same opaque ``prod_…`` value as ``product_public_id``."""
+    """The opaque ``prod_…`` product identifier — equal-valued with
+    :attr:`product_public_id` (a permanent alias pair since the
+    platform's identifier cutover) and matching :attr:`Price.product_id`
+    from the pricing API. Gate on either field."""
 
     status: str
     """``active``/``trialing``/``one_time_active``/``free``/``none``/…"""
@@ -205,3 +205,9 @@ class LicenseState:
     canceled_at: Optional[str] = None
     license_key: Optional[str] = None
     rotated_at: Optional[str] = None
+    product_id: str = ""
+    """Equal-valued alias of :attr:`product_public_id` (the opaque
+    ``prod_…`` id) — the same pair the entitlement endpoint carries, so
+    gating code works identically in both verification modes. Trailing
+    with a default so positional construction predating it still
+    works."""
