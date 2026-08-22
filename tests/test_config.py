@@ -63,3 +63,63 @@ def test_bad_int(monkeypatch):
     monkeypatch.setenv("UTA_REQUEST_TIMEOUT_SECONDS", "not-a-number")
     with pytest.raises(UtaConfigError):
         uta_config.load(force=True)
+
+
+# ── configure() — in-code overrides (Glassbox F-19, JS-SDK parity) ──
+
+
+@pytest.fixture(autouse=False)
+def clean_overrides():
+    uta_config.reset_config()
+    yield
+    uta_config.reset_config()
+
+
+def test_configure_overrides_env(clean_overrides):
+    uta_config.configure(
+        api_url="http://localhost:8000", issuer="http://localhost:8000/o"
+    )
+    cfg = uta_config.load()
+    assert cfg.api_url == "http://localhost:8000"
+    assert cfg.issuer == "http://localhost:8000/o"
+    # Untouched keys still resolve from the environment.
+    assert cfg.client_id == "client-test-123"
+
+
+def test_configure_clears_the_cache(clean_overrides):
+    before = uta_config.load(force=True)
+    uta_config.configure(api_url="http://localhost:8000")
+    after = uta_config.load()  # no force — configure() must invalidate
+    assert before.api_url != after.api_url
+
+
+def test_configure_none_removes_one_override(clean_overrides):
+    uta_config.configure(api_url="http://localhost:8000")
+    uta_config.configure(api_url=None)
+    assert uta_config.load().api_url == "https://api.test.example"
+
+
+def test_reset_config_drops_everything(clean_overrides):
+    uta_config.configure(api_url="http://localhost:8000")
+    uta_config.reset_config()
+    assert uta_config.load().api_url == "https://api.test.example"
+
+
+def test_configure_rejects_unknown_options(clean_overrides):
+    with pytest.raises(UtaConfigError, match="unknown configure"):
+        uta_config.configure(apiUrl="http://localhost:8000")
+
+
+def test_load_config_is_load(clean_overrides):
+    assert uta_config.load_config(force=True) == uta_config.load()
+
+
+def test_package_root_exports_the_config_api():
+    import usethatapp
+
+    for name in (
+        "configure", "load_config", "reset_config", "UtaConfig",
+        "DEFAULT_API_URL", "DEFAULT_ISSUER", "DEFAULT_SCOPES",
+    ):
+        assert name in usethatapp.__all__, name
+        assert hasattr(usethatapp, name), name

@@ -49,12 +49,11 @@ class UtaPermissionError(UtaError):
 
 
 class UtaServiceNotEnabledError(UtaPermissionError):
-    """The app's developer has not enabled the Auth & Entitlement add-on.
+    """The app's developer has not enabled the Hosted sign-in add-on.
 
     The token is fine and no retry, refresh, or re-consent will help:
-    the entitlement service is switched off for this app. Enable it on
-    the app's manage page at usethatapp.com (Integration panel →
-    "Turn on entitlement").
+    Hosted sign-in is switched off for this app. The developer turns it
+    on from the app's manage hub (Integration panel → Hosted sign-in).
     """
 
 

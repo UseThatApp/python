@@ -35,12 +35,34 @@ format inspired by "Keep a Changelog".
   app's manage page). Existing `except UtaPermissionError` blocks catch
   it unchanged.
 
+- In-code configuration: `configure(api_url=…, issuer=…, …)`,
+  `load_config()`, and `reset_config()` are now exported from the
+  package root, alongside `UtaConfig` and the `DEFAULT_API_URL` /
+  `DEFAULT_ISSUER` / `DEFAULT_SCOPES` constants — parity with the
+  JavaScript SDK's `configure()` / `loadConfig()` / `resetConfig()`.
+  Overrides win over Django settings and environment variables, and a
+  non-production `api_url` can now be corrected at runtime instead of
+  only through the process environment.
+
 ### Fixed
 
 - `UtaNotFoundError`, `UtaOrderProcessingError`, and
   `UtaLicenseCanceledError` are now exported from the package root —
   they were defined and documented but not importable as
   `from usethatapp import …`.
+- The `UtaServiceNotEnabledError` message named the add-on by its
+  retired public name ("Auth & Entitlement") and hardcoded
+  `usethatapp.com`; it now says "Hosted sign-in" and points at the
+  configured `UTA_API_URL` host.
+- A `429` from the entitlement endpoint now raises `UtaServerError`
+  (the retry-with-backoff class, matching the License Key API and the
+  documented error table) instead of the base `UtaError`.
+- Non-JSON error bodies (HTML error pages) are collapsed and capped at
+  ~200 characters when quoted into exception messages, instead of
+  inlining the entire page.
+- `get_entitlement(timeout=)` and `get_entitlement_async(timeout=)` are
+  typed `Optional[float]`, matching every other function (they were
+  `Optional[int]`, failing strict type checks on e.g. `timeout=2.5`).
 
 ## [2.1.0] - 2026-08-11
 

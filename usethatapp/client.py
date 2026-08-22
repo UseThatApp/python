@@ -247,7 +247,7 @@ def logout_url(
 # Entitlement (the OAuth-era replacement for get_version)
 # ──────────────────────────────────────────────────────────────────────
 
-def get_entitlement(access_token: str, *, timeout: Optional[int] = None) -> Entitlement:
+def get_entitlement(access_token: str, *, timeout: Optional[float] = None) -> Entitlement:
     """Query the user's live license state for your app.
 
     Sends ``Authorization: Bearer <access_token>`` to
@@ -272,7 +272,7 @@ def get_entitlement(access_token: str, *, timeout: Optional[int] = None) -> Enti
 
 
 async def get_entitlement_async(
-    access_token: str, *, timeout: Optional[int] = None
+    access_token: str, *, timeout: Optional[float] = None
 ) -> Entitlement:
     """Async variant of :func:`get_entitlement`."""
     cfg = _config.load()
@@ -544,9 +544,9 @@ def _raise_for_entitlement_status(status: int, body_text: str) -> None:
     if 200 <= status < 300:
         return
     if status == 400:
-        raise UtaError(f"400 from entitlement (client not linked to an app?): {body_text}")
+        raise UtaError(f"400 from entitlement (client not linked to an app?): {_snippet(body_text)}")
     if status == 401:
-        raise UtaTokenError(f"401 from entitlement — access token invalid/expired: {body_text}")
+        raise UtaTokenError(f"401 from entitlement — access token invalid/expired: {_snippet(body_text)}")
     if status == 403:
         # Two distinct 403s (see the server's EntitlementView contract):
         # insufficient_scope (fix the requested scopes) vs
@@ -554,15 +554,38 @@ def _raise_for_entitlement_status(status: int, body_text: str) -> None:
         # nothing in this process will fix it).
         if _error_code(body_text) == "service_not_enabled":
             raise UtaServiceNotEnabledError(
-                "403 from entitlement — the entitlement service is not "
-                "enabled for this app. Enable the Auth & Entitlement "
-                "add-on on the app's manage page at usethatapp.com "
-                f"(Integration panel): {body_text}"
+                "403 from entitlement — Hosted sign-in is not enabled "
+                "for this app. The developer can turn on the Hosted "
+                "sign-in add-on from the app's manage hub at "
+                f"{_config.resolve_api_url()} (Integration panel): "
+                f"{_snippet(body_text)}"
             )
-        raise UtaPermissionError(f"403 from entitlement — missing 'entitlements' scope: {body_text}")
+        raise UtaPermissionError(f"403 from entitlement — missing 'entitlements' scope: {_snippet(body_text)}")
+    if status == 429:
+        raise UtaServerError(
+            f"429 from entitlement — rate limited, retry with backoff: "
+            f"{_snippet(body_text)}"
+        )
     if 500 <= status < 600:
-        raise UtaServerError(f"{status} from entitlement: {body_text}")
-    raise UtaError(f"unexpected status {status} from entitlement: {body_text}")
+        raise UtaServerError(f"{status} from entitlement: {_snippet(body_text)}")
+    raise UtaError(f"unexpected status {status} from entitlement: {_snippet(body_text)}")
+
+
+def _snippet(body_text: str, limit: int = 200) -> str:
+    """Error bodies get quoted into exception messages. A JSON error body
+    is short and worth quoting whole; a non-JSON body (an HTML error page
+    — a proxy's, or a server debug page) is kilobytes of markup that bury
+    the message, so quote only its head."""
+    text = body_text.strip()
+    try:
+        json.loads(text)
+        return text
+    except ValueError:
+        pass
+    collapsed = " ".join(text.split())
+    if len(collapsed) <= limit:
+        return collapsed
+    return collapsed[:limit] + f"… [{len(body_text)} bytes truncated]"
 
 
 def _error_code(body_text: str) -> str:
@@ -614,16 +637,16 @@ def _raise_for_public_api_status(status: int, body_text: str, *, endpoint: str) 
     if status == 404:
         raise UtaError(
             f"404 from {endpoint} — the app is unknown, unpublished, or "
-            f"external sales is not enabled for it: {body_text}"
+            f"external sales is not enabled for it: {_snippet(body_text)}"
         )
     if status == 429:
         raise UtaServerError(
             f"429 from {endpoint} — rate limited (120 requests/minute per IP); "
-            f"retry with backoff: {body_text}"
+            f"retry with backoff: {_snippet(body_text)}"
         )
     if 500 <= status < 600:
-        raise UtaServerError(f"{status} from {endpoint}: {body_text}")
-    raise UtaError(f"unexpected status {status} from {endpoint}: {body_text}")
+        raise UtaServerError(f"{status} from {endpoint}: {_snippet(body_text)}")
+    raise UtaError(f"unexpected status {status} from {endpoint}: {_snippet(body_text)}")
 
 
 def _parse_app_info(data: Mapping[str, Any]) -> AppInfo:
@@ -725,25 +748,25 @@ def _raise_for_license_api_status(status: int, body_text: str) -> None:
     if status == 401:
         raise UtaConfigError(
             f"client credentials rejected — check UTA_CLIENT_ID / "
-            f"UTA_CLIENT_SECRET: {body_text}"
+            f"UTA_CLIENT_SECRET: {_snippet(body_text)}"
         )
     if status == 404:
         raise UtaNotFoundError(
-            f"{code or 'not found'}: {body_text}", code=code
+            f"{code or 'not found'}: {_snippet(body_text)}", code=code
         )
     if status == 409:
         raise UtaLicenseCanceledError(
-            f"license is canceled — its key cannot be regenerated: {body_text}"
+            f"license is canceled — its key cannot be regenerated: {_snippet(body_text)}"
         )
     if status == 400:
-        raise UtaError(f"400 from license API: {body_text}")
+        raise UtaError(f"400 from license API: {_snippet(body_text)}")
     if status == 429:
         raise UtaServerError(
-            f"429 from license API — rate limited, retry with backoff: {body_text}"
+            f"429 from license API — rate limited, retry with backoff: {_snippet(body_text)}"
         )
     if 500 <= status < 600:
-        raise UtaServerError(f"{status} from license API: {body_text}")
-    raise UtaError(f"unexpected status {status} from license API: {body_text}")
+        raise UtaServerError(f"{status} from license API: {_snippet(body_text)}")
+    raise UtaError(f"unexpected status {status} from license API: {_snippet(body_text)}")
 
 
 def _parse_license_state(data: Mapping[str, Any]) -> LicenseState:

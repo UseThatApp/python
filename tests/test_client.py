@@ -184,9 +184,14 @@ def test_get_entitlement_service_not_enabled(oidc_routes):
                                  "entitlement service for this app.",
         })
     )
-    with pytest.raises(UtaServiceNotEnabledError, match="manage page"):
+    with pytest.raises(UtaServiceNotEnabledError, match="Hosted sign-in") as exc_info:
         get_entitlement("at-123")
     assert issubclass(UtaServiceNotEnabledError, UtaPermissionError)
+    # Glassbox F-10: the message names the CURRENT public feature name and
+    # points at the configured host, never a hardcoded usethatapp.com.
+    message = str(exc_info.value)
+    assert "Auth & Entitlement" not in message
+    assert API_URL in message
 
 
 def test_get_entitlement_scope_403_still_permission_error(oidc_routes):
@@ -281,3 +286,41 @@ def test_logout_url(oidc_routes):
     assert q["id_token_hint"] == ["idt"]
     assert q["post_logout_redirect_uri"] == ["https://app.test.example/bye"]
     assert q["client_id"] == [CLIENT_ID]
+
+
+def test_get_entitlement_429_maps_to_server_error(oidc_routes):
+    """Glassbox F-04: a throttle answer is transient — it must land in
+    UtaServerError (the retry-with-backoff class), not the base class."""
+    oidc_routes.get(API_URL + "/licensing/entitlement/").mock(
+        return_value=httpx.Response(
+            429, json={"error": "rate_limited"}, headers={"Retry-After": "60"}
+        )
+    )
+    with pytest.raises(UtaServerError, match="rate limited"):
+        get_entitlement("at-123")
+
+
+def test_snippet_quotes_json_whole_and_truncates_html():
+    """Glassbox F-11: a JSON error body is quoted whole; a non-JSON body
+    (an HTML error page) is collapsed and capped so exception messages
+    stay one readable line."""
+    from usethatapp.client import _snippet
+
+    json_body = '{"error": "unknown_key"}'
+    assert _snippet(json_body) == json_body
+
+    html = "<!DOCTYPE html>\n<html>\n" + ("<p>filler</p>\n" * 200) + "</html>"
+    out = _snippet(html)
+    assert len(out) < 260
+    assert "\n" not in out
+    assert "truncated" in out
+
+
+def test_non_json_error_body_is_not_inlined_whole(oidc_routes):
+    html_page = "<!DOCTYPE html><html>" + "x" * 5000 + "</html>"
+    oidc_routes.get(API_URL + "/licensing/entitlement/").mock(
+        return_value=httpx.Response(500, text=html_page)
+    )
+    with pytest.raises(UtaServerError) as exc_info:
+        get_entitlement("at-123")
+    assert len(str(exc_info.value)) < 400

@@ -33,6 +33,72 @@ class UtaConfig:
 
 _cached: Optional[UtaConfig] = None
 
+# In-code configuration overrides (Glassbox F-19: parity with the
+# JavaScript SDK's ``configure()``). Highest precedence: consulted before
+# Django settings and the environment.
+_overrides: dict = {}
+
+_ALLOWED_OVERRIDES = frozenset({
+    "client_id",
+    "client_secret",
+    "client_secret_path",
+    "redirect_uri",
+    "issuer",
+    "api_url",
+    "scopes",
+    "request_timeout_seconds",
+    "clock_skew_seconds",
+})
+
+
+def configure(**overrides: Any) -> None:
+    """Set configuration in code, overriding Django settings and env vars.
+
+    Mirrors the JavaScript SDK's ``configure()``. Accepts the
+    :class:`UtaConfig` field names as keyword arguments::
+
+        import usethatapp
+        usethatapp.configure(api_url="http://localhost:8000",
+                             issuer="http://localhost:8000/o")
+
+    Passing ``None`` for a key removes that override. Clears the cached
+    config, so the next SDK call sees the new values. Use
+    :func:`reset_config` to drop every override at once.
+
+    Raises:
+        UtaConfigError: on an unknown option name.
+    """
+    unknown = set(overrides) - _ALLOWED_OVERRIDES
+    if unknown:
+        raise UtaConfigError(
+            "unknown configure() option(s): " + ", ".join(sorted(unknown))
+        )
+    global _cached
+    for key, value in overrides.items():
+        if value is None:
+            _overrides.pop(key, None)
+        else:
+            _overrides[key] = value
+    _cached = None
+
+
+def load_config(force: bool = False) -> UtaConfig:
+    """Resolve and return the active configuration (cached).
+
+    The JS-parity spelling of :func:`load`.
+    """
+    return load(force)
+
+
+def reset_config() -> None:
+    """Drop every :func:`configure` override and the cached config.
+
+    The next SDK call resolves fresh from Django settings / env vars.
+    """
+    _overrides.clear()
+    reset_cache()
+
+
 
 def _get_django_settings() -> Any:
     try:
@@ -47,6 +113,12 @@ def _get_django_settings() -> Any:
 
 
 def _raw(name: str) -> Any:
+    # configure() overrides win over Django settings and the environment.
+    # UTA_CLIENT_ID → "client_id", UTA_API_URL → "api_url", etc.
+    if name.startswith("UTA_"):
+        field = name[len("UTA_"):].lower()
+        if field in _overrides:
+            return _overrides[field]
     djs = _get_django_settings()
     if djs is not None:
         v = getattr(djs, name, None)
@@ -165,6 +237,9 @@ def reset_cache() -> None:
 
 __all__ = [
     "UtaConfig",
+    "configure",
+    "load_config",
+    "reset_config",
     "load",
     "reset_cache",
     "resolve_api_url",

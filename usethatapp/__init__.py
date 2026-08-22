@@ -36,6 +36,15 @@ from .client import (
     refresh,
     userinfo,
 )
+from .config import (
+    DEFAULT_API_URL,
+    DEFAULT_ISSUER,
+    DEFAULT_SCOPES,
+    UtaConfig,
+    configure,
+    load_config,
+    reset_config,
+)
 from .errors import (
     UtaAuthError,
     UtaConfigError,
@@ -82,6 +91,15 @@ __all__ = [
     "get_app_info_async",
     "get_prices",
     "get_prices_async",
+    # configuration — in-code overrides, JS-SDK parity (configure /
+    # loadConfig / resetConfig over there)
+    "configure",
+    "load_config",
+    "reset_config",
+    "UtaConfig",
+    "DEFAULT_API_URL",
+    "DEFAULT_ISSUER",
+    "DEFAULT_SCOPES",
     # types
     "UtaSession",
     "Entitlement",
