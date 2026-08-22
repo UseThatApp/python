@@ -41,6 +41,9 @@ from .errors import (
     UtaConfigError,
     UtaDiscoveryError,
     UtaError,
+    UtaLicenseCanceledError,
+    UtaNotFoundError,
+    UtaOrderProcessingError,
     UtaPermissionError,
     UtaServiceNotEnabledError,
     UtaServerError,
@@ -94,5 +97,10 @@ __all__ = [
     "UtaTokenError",
     "UtaPermissionError",
     "UtaServiceNotEnabledError",
+    # License Key API errors — callers catch these by name around
+    # validate_license_key / get_order / regenerate_license_key.
+    "UtaNotFoundError",
+    "UtaOrderProcessingError",
+    "UtaLicenseCanceledError",
     "UtaServerError",
 ]
