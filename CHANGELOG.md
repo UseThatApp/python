@@ -6,7 +6,7 @@ format inspired by "Keep a Changelog".
 
 ## [Unreleased]
 
-## [2.2.0] - 2026-08-22
+## [2.2.0] - 2026-08-23
 
 ### Added
 
