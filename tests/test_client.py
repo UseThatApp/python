@@ -324,3 +324,38 @@ def test_non_json_error_body_is_not_inlined_whole(oidc_routes):
     with pytest.raises(UtaServerError) as exc_info:
         get_entitlement("at-123")
     assert len(str(exc_info.value)) < 400
+
+
+def test_429_surfaces_retry_after_on_the_exception(oidc_routes):
+    """Quiver J-05: the server's backoff hint must reach the caller —
+    documented, sent, and previously discarded one layer below them."""
+    oidc_routes.get(API_URL + "/licensing/entitlement/").mock(
+        return_value=httpx.Response(
+            429, json={"error": "rate_limited"}, headers={"Retry-After": "60"}
+        )
+    )
+    with pytest.raises(UtaServerError) as exc_info:
+        get_entitlement("at-123")
+    assert exc_info.value.retry_after == 60
+
+
+def test_retry_after_is_none_when_absent(oidc_routes):
+    oidc_routes.get(API_URL + "/licensing/entitlement/").mock(
+        return_value=httpx.Response(503, text="unavailable")
+    )
+    with pytest.raises(UtaServerError) as exc_info:
+        get_entitlement("at-123")
+    assert exc_info.value.retry_after is None
+
+
+def test_retry_after_http_date_form_is_none(oidc_routes):
+    # RFC 9110 allows an HTTP-date; we only surface the seconds form.
+    oidc_routes.get(API_URL + "/licensing/entitlement/").mock(
+        return_value=httpx.Response(
+            429, json={"error": "rate_limited"},
+            headers={"Retry-After": "Sat, 23 Aug 2026 02:00:00 GMT"},
+        )
+    )
+    with pytest.raises(UtaServerError) as exc_info:
+        get_entitlement("at-123")
+    assert exc_info.value.retry_after is None

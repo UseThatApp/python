@@ -81,10 +81,18 @@ class UtaLicenseCanceledError(UtaError):
 
 
 class UtaServerError(UtaError):
-    """A usethatapp.com endpoint returned 5xx, or the network failed.
+    """A usethatapp.com endpoint returned 5xx or 429, or the network failed.
 
-    Callers MAY retry with backoff.
+    Retriable. On a rate limit (429), ``retry_after`` carries the server's
+    ``Retry-After`` header in seconds — use it as the backoff interval
+    instead of guessing. ``None`` when the server sent none (5xx, network
+    errors).
     """
+
+    def __init__(self, message: str, retry_after=None):
+        super().__init__(message)
+        self.retry_after = retry_after
+
 
 
 __all__ = [

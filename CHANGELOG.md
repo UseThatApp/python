@@ -44,6 +44,11 @@ format inspired by "Keep a Changelog".
   non-production `api_url` can now be corrected at runtime instead of
   only through the process environment.
 
+- `UtaServerError.retry_after` — the server's `Retry-After` header in
+  seconds on a 429 (`None` otherwise), so backoff loops can use the
+  interval the platform actually sent instead of guessing. Matches the
+  JavaScript SDK's `retryAfter`.
+
 ### Fixed
 
 - `UtaNotFoundError`, `UtaOrderProcessingError`, and

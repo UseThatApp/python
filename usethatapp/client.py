@@ -267,7 +267,7 @@ def get_entitlement(access_token: str, *, timeout: Optional[float] = None) -> En
         )
     except httpx.RequestError as e:
         raise UtaServerError(f"network error calling entitlement: {e}")
-    _raise_for_entitlement_status(resp.status_code, resp.text)
+    _raise_for_entitlement_status(resp.status_code, resp.text, retry_after=_retry_after(resp))
     return _parse_entitlement(_json(resp))
 
 
@@ -288,7 +288,7 @@ async def get_entitlement_async(
             )
     except httpx.RequestError as e:
         raise UtaServerError(f"network error calling entitlement: {e}")
-    _raise_for_entitlement_status(resp.status_code, resp.text)
+    _raise_for_entitlement_status(resp.status_code, resp.text, retry_after=_retry_after(resp))
     return _parse_entitlement(_json(resp))
 
 
@@ -366,7 +366,10 @@ def get_app_info(*, timeout: Optional[float] = None) -> AppInfo:
         )
     except httpx.RequestError as e:
         raise UtaServerError(f"network error calling app info: {e}")
-    _raise_for_public_api_status(resp.status_code, resp.text, endpoint="app info")
+    _raise_for_public_api_status(
+        resp.status_code, resp.text, endpoint="app info",
+        retry_after=_retry_after(resp),
+    )
     return _parse_app_info(_json(resp))
 
 
@@ -380,7 +383,10 @@ async def get_app_info_async(*, timeout: Optional[float] = None) -> AppInfo:
             resp = await client.get(url)
     except httpx.RequestError as e:
         raise UtaServerError(f"network error calling app info: {e}")
-    _raise_for_public_api_status(resp.status_code, resp.text, endpoint="app info")
+    _raise_for_public_api_status(
+        resp.status_code, resp.text, endpoint="app info",
+        retry_after=_retry_after(resp),
+    )
     return _parse_app_info(_json(resp))
 
 
@@ -404,7 +410,10 @@ def get_prices(*, timeout: Optional[float] = None) -> AppPrices:
         )
     except httpx.RequestError as e:
         raise UtaServerError(f"network error calling prices: {e}")
-    _raise_for_public_api_status(resp.status_code, resp.text, endpoint="prices")
+    _raise_for_public_api_status(
+        resp.status_code, resp.text, endpoint="prices",
+        retry_after=_retry_after(resp),
+    )
     return _parse_app_prices(_json(resp))
 
 
@@ -418,7 +427,10 @@ async def get_prices_async(*, timeout: Optional[float] = None) -> AppPrices:
             resp = await client.get(url)
     except httpx.RequestError as e:
         raise UtaServerError(f"network error calling prices: {e}")
-    _raise_for_public_api_status(resp.status_code, resp.text, endpoint="prices")
+    _raise_for_public_api_status(
+        resp.status_code, resp.text, endpoint="prices",
+        retry_after=_retry_after(resp),
+    )
     return _parse_app_prices(_json(resp))
 
 
@@ -540,7 +552,21 @@ def _session(
     )
 
 
-def _raise_for_entitlement_status(status: int, body_text: str) -> None:
+def _retry_after(resp) -> "Optional[int]":
+    """The ``Retry-After`` header in whole seconds, or None (absent or
+    HTTP-date form). Threaded into every UtaServerError raise so a 429's
+    backoff hint reaches the caller instead of being discarded one layer
+    below them (Quiver J-05 — same fix as the JS SDK's ``retryAfter``)."""
+    raw = resp.headers.get("Retry-After")
+    if raw is None:
+        return None
+    raw = raw.strip()
+    if not raw.isdigit():
+        return None
+    return int(raw)
+
+
+def _raise_for_entitlement_status(status: int, body_text: str, retry_after=None) -> None:
     if 200 <= status < 300:
         return
     if status == 400:
@@ -564,10 +590,14 @@ def _raise_for_entitlement_status(status: int, body_text: str) -> None:
     if status == 429:
         raise UtaServerError(
             f"429 from entitlement — rate limited, retry with backoff: "
-            f"{_snippet(body_text)}"
+            f"{_snippet(body_text)}",
+            retry_after=retry_after,
         )
     if 500 <= status < 600:
-        raise UtaServerError(f"{status} from entitlement: {_snippet(body_text)}")
+        raise UtaServerError(
+            f"{status} from entitlement: {_snippet(body_text)}",
+            retry_after=retry_after,
+        )
     raise UtaError(f"unexpected status {status} from entitlement: {_snippet(body_text)}")
 
 
@@ -631,7 +661,7 @@ def _public_timeout(timeout: Optional[float]) -> float:
     )
 
 
-def _raise_for_public_api_status(status: int, body_text: str, *, endpoint: str) -> None:
+def _raise_for_public_api_status(status: int, body_text: str, *, endpoint: str, retry_after=None) -> None:
     if 200 <= status < 300:
         return
     if status == 404:
@@ -642,10 +672,14 @@ def _raise_for_public_api_status(status: int, body_text: str, *, endpoint: str) 
     if status == 429:
         raise UtaServerError(
             f"429 from {endpoint} — rate limited (120 requests/minute per IP); "
-            f"retry with backoff: {_snippet(body_text)}"
+            f"retry with backoff: {_snippet(body_text)}",
+            retry_after=retry_after,
         )
     if 500 <= status < 600:
-        raise UtaServerError(f"{status} from {endpoint}: {_snippet(body_text)}")
+        raise UtaServerError(
+            f"{status} from {endpoint}: {_snippet(body_text)}",
+            retry_after=retry_after,
+        )
     raise UtaError(f"unexpected status {status} from {endpoint}: {_snippet(body_text)}")
 
 
@@ -741,7 +775,7 @@ def _license_api_auth(cfg) -> dict:
     return {"Authorization": f"Basic {token}"}
 
 
-def _raise_for_license_api_status(status: int, body_text: str) -> None:
+def _raise_for_license_api_status(status: int, body_text: str, retry_after=None) -> None:
     if 200 <= status < 300:
         return
     code = _error_code(body_text)
@@ -762,10 +796,14 @@ def _raise_for_license_api_status(status: int, body_text: str) -> None:
         raise UtaError(f"400 from license API: {_snippet(body_text)}")
     if status == 429:
         raise UtaServerError(
-            f"429 from license API — rate limited, retry with backoff: {_snippet(body_text)}"
+            f"429 from license API — rate limited, retry with backoff: {_snippet(body_text)}",
+            retry_after=retry_after,
         )
     if 500 <= status < 600:
-        raise UtaServerError(f"{status} from license API: {_snippet(body_text)}")
+        raise UtaServerError(
+            f"{status} from license API: {_snippet(body_text)}",
+            retry_after=retry_after,
+        )
     raise UtaError(f"unexpected status {status} from license API: {_snippet(body_text)}")
 
 
@@ -813,7 +851,9 @@ def _license_api_request(
             "order confirmed but its license hasn't landed yet — retry "
             "in a few seconds"
         )
-    _raise_for_license_api_status(resp.status_code, resp.text)
+    _raise_for_license_api_status(
+        resp.status_code, resp.text, retry_after=_retry_after(resp)
+    )
     return _parse_license_state(_json(resp))
 
 
