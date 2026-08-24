@@ -71,10 +71,15 @@ def configure_env(monkeypatch):
     monkeypatch.setenv("UTA_CLOCK_SKEW_SECONDS", "60")
     # Drop any inherited secret-path var so tests are hermetic.
     monkeypatch.delenv("UTA_CLIENT_SECRET_PATH", raising=False)
-    uta_config.reset_cache()
+    # reset_config(), not reset_cache(): the process-global _overrides
+    # dict must be cleared too, or one test's configure() call leaks
+    # into every later test — and since overrides outrank monkeypatched
+    # env vars, the leak surfaces as unrelated respx "no route matched"
+    # failures (code review finding 7).
+    uta_config.reset_config()
     uta_discovery.reset_cache()
     yield
-    uta_config.reset_cache()
+    uta_config.reset_config()
     uta_discovery.reset_cache()
 
 

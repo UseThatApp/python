@@ -38,6 +38,12 @@ _cached: Optional[UtaConfig] = None
 # Django settings and the environment.
 _overrides: dict = {}
 
+# Integer-valued options: validated as int (or digit string) up front.
+_INT_OVERRIDES = frozenset({
+    "request_timeout_seconds",
+    "clock_skew_seconds",
+})
+
 _ALLOWED_OVERRIDES = frozenset({
     "client_id",
     "client_secret",
@@ -61,18 +67,53 @@ def configure(**overrides: Any) -> None:
         usethatapp.configure(api_url="http://localhost:8000",
                              issuer="http://localhost:8000/o")
 
-    Passing ``None`` for a key removes that override. Clears the cached
-    config, so the next SDK call sees the new values. Use
-    :func:`reset_config` to drop every override at once.
+    Values are strings (``request_timeout_seconds`` and
+    ``clock_skew_seconds`` also accept int). Passing ``None`` for a key
+    removes that override. Clears the cached config, so the next SDK
+    call sees the new values. Use :func:`reset_config` to drop every
+    override at once.
 
     Raises:
-        UtaConfigError: on an unknown option name.
+        UtaConfigError: on an unknown option name or a value of the
+            wrong type — rejected HERE, naming the option, rather than
+            silently str()-coerced into a corrupt value that surfaces
+            later as an opaque OAuth or env-var error (code review:
+            ``scopes=["openid"]`` used to become the Python repr string
+            and reach the wire as the literal scope parameter).
     """
     unknown = set(overrides) - _ALLOWED_OVERRIDES
     if unknown:
         raise UtaConfigError(
             "unknown configure() option(s): " + ", ".join(sorted(unknown))
         )
+    for key, value in overrides.items():
+        if value is None:
+            continue
+        if key in _INT_OVERRIDES:
+            # bool is an int subclass; True would silently become 1.
+            if isinstance(value, bool) or not isinstance(value, (int, str)):
+                raise UtaConfigError(
+                    f"configure() option {key!r} must be an integer, "
+                    f"got {type(value).__name__}"
+                )
+            try:
+                int(value)
+            except ValueError:
+                raise UtaConfigError(
+                    f"configure() option {key!r} must be an integer, "
+                    f"got {value!r}"
+                )
+        elif not isinstance(value, str):
+            hint = ""
+            if key == "scopes" and isinstance(value, (list, tuple, set)):
+                hint = (
+                    ' — join scope names with spaces, e.g. '
+                    'scopes="openid entitlements"'
+                )
+            raise UtaConfigError(
+                f"configure() option {key!r} must be a string, "
+                f"got {type(value).__name__}{hint}"
+            )
     global _cached
     for key, value in overrides.items():
         if value is None:
@@ -112,19 +153,37 @@ def _get_django_settings() -> Any:
     return None
 
 
-def _raw(name: str) -> Any:
-    # configure() overrides win over Django settings and the environment.
+def _from_overrides(name: str) -> Any:
     # UTA_CLIENT_ID → "client_id", UTA_API_URL → "api_url", etc.
     if name.startswith("UTA_"):
-        field = name[len("UTA_"):].lower()
-        if field in _overrides:
-            return _overrides[field]
+        return _overrides.get(name[len("UTA_"):].lower())
+    return None
+
+
+def _from_django(name: str) -> Any:
     djs = _get_django_settings()
     if djs is not None:
-        v = getattr(djs, name, None)
+        return getattr(djs, name, None)
+    return None
+
+
+def _from_env(name: str) -> Any:
+    return os.environ.get(name)
+
+
+# Precedence, highest first: configure() overrides, Django settings,
+# environment. _secret_or_path walks these LAYERS explicitly — never mix
+# layers per key, or a configured secret path loses to a stale env
+# secret (code review finding 2).
+_LAYERS = (_from_overrides, _from_django, _from_env)
+
+
+def _raw(name: str) -> Any:
+    for layer in _LAYERS:
+        v = layer(name)
         if v is not None:
             return v
-    return os.environ.get(name)
+    return None
 
 
 def _str(name: str) -> Optional[str]:
@@ -138,20 +197,32 @@ def _secret_or_path(direct_name: str, path_name: str) -> Optional[str]:
     """Return a secret from ``direct_name`` or by reading ``path_name``.
 
     The ``*_PATH`` variant supports hosting providers that mount secret
-    files (Render Secret Files, Fly volumes, k8s secret volumes, …). The
-    direct value wins if both are set.
+    files (Render Secret Files, Fly volumes, k8s secret volumes, …).
+
+    Precedence is decided per LAYER, not per key: whichever of the pair
+    is set in the highest-precedence layer wins, so
+    ``configure(client_secret_path=…)`` outranks an environment
+    ``UTA_CLIENT_SECRET`` — "overrides win over Django settings and
+    environment variables" must hold across the pair, not only within
+    one name (code review finding 2). Within a layer, the direct value
+    wins over the path.
     """
-    direct = _str(direct_name)
-    if direct is not None:
-        return direct
-    path = _str(path_name)
-    if path is None:
-        return None
-    try:
-        with open(path, "r", encoding="utf-8") as fh:
-            return fh.read().strip()
-    except OSError as e:
-        raise UtaConfigError(f"{path_name}={path!r}: could not read file: {e}")
+    for layer in _LAYERS:
+        direct = layer(direct_name)
+        if direct is not None:
+            return direct if isinstance(direct, str) else str(direct)
+        path = layer(path_name)
+        if path is None:
+            continue
+        path = path if isinstance(path, str) else str(path)
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                return fh.read().strip()
+        except OSError as e:
+            raise UtaConfigError(
+                f"{path_name}={path!r}: could not read file: {e}"
+            )
+    return None
 
 
 def _int(name: str, default: int) -> int:

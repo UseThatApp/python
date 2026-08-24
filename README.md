@@ -125,9 +125,10 @@ are documentation only — nothing framework-specific ships in the package.
 |--------|-----------------------------------------------|-----------------------------------------------|
 | 401    | `UtaTokenError`                               | Access token invalid/expired — re-auth/refresh.|
 | 403 (`insufficient_scope`)   | `UtaPermissionError`            | Token lacks the `entitlements` scope.         |
-| 403 (`service_not_enabled`)  | `UtaServiceNotEnabledError`     | The Auth & Entitlement add-on is switched off for this app. No retry, refresh, or re-consent will help — enable it on the app's manage page at usethatapp.com (Integration panel). |
+| 403 (`service_not_enabled`)  | `UtaServiceNotEnabledError`     | The Hosted sign-in add-on is switched off for this app. No retry, refresh, or re-consent will help — enable it on the app's manage page at www.usethatapp.com (Integration panel). |
 | 400    | `UtaError`                                    | Client not linked to an app (misconfig).      |
-| 5xx    | `UtaServerError`                              | Retriable with backoff.                       |
+| 429    | `UtaServerError`                              | Rate limited — back off; `e.retry_after` carries the server's `Retry-After` seconds (or `None`). |
+| 5xx    | `UtaServerError`                              | Retriable with backoff; `e.retry_after` when the server sent one. |
 
 All inherit from `UtaError` — catch that for a single `except` clause.
 `UtaServiceNotEnabledError` subclasses `UtaPermissionError`, so existing
@@ -202,9 +203,10 @@ for price in pricing.prices:
 `Price.amount` is a decimal **string** (e.g. `"10.00"`) — parse with
 `decimal.Decimal` if you need arithmetic. `Price.product_id` is the
 opaque `prod_…` identifier to gate features on after purchase — compare
-it against **`Entitlement.product_public_id`** (`Entitlement.product_id`
-still carries the legacy UUID until the platform's identifier cutover,
-after which both fields carry the same `prod_…` value).
+it against `Entitlement.product_id` or `Entitlement.product_public_id`:
+since the platform's identifier cutover they are a permanent
+equal-valued alias pair carrying the same `prod_…` value, so gate on
+either.
 
 Notes: UseThatApp is the **merchant of record** (checkout, tax, refunds
 are handled for you). Purchases are currently **US-only**. External

@@ -8,6 +8,44 @@ format inspired by "Keep a Changelog".
 
 ## [2.2.0] - 2026-08-23
 
+### Fixed (pre-release code review)
+
+- `Entitlement.product_id` now carries the same
+  fall-back-to-`product_public_id` parsing as `LicenseState.product_id`,
+  so the alias contract ("gate on either field") holds in both
+  verification modes — previously only the License Key API parser had
+  the fallback.
+- `configure(client_secret_path=…)` now outranks an environment
+  `UTA_CLIENT_SECRET`: secret-pair precedence is decided per layer
+  (overrides → Django settings → environment), not per key.
+- `configure()` rejects wrong-typed values with a `UtaConfigError`
+  naming the option (e.g. a scopes *list* gets "join scope names with
+  spaces") instead of silently `str()`-coercing them into corrupt
+  values that surfaced later as opaque OAuth errors.
+- A malformed `Retry-After` header containing Unicode digit-property
+  characters (e.g. `²`) no longer escapes as an uncaught `ValueError`
+  from a 429 — it degrades to `retry_after=None`.
+- `userinfo()` and the token endpoint now speak the same 429/5xx
+  contract as every other endpoint: 429 raises retriable
+  `UtaServerError` with `retry_after` (a throttled token refresh is no
+  longer a `UtaTokenError`, which read as "log the user out"), and
+  their error messages cap quoted bodies like everywhere else.
+- The ~200-character error-body cap now applies to JSON bodies too —
+  a multi-kilobyte JSON error (DRF validation map, debug-mode 500) was
+  previously quoted whole — and the truncation suffix reports the
+  amount actually cut.
+- `timeout=0.0` (a fail-fast probe, expressible since the `float`
+  widening) is respected instead of being replaced by the configured
+  default in `get_entitlement`, `get_entitlement_async`, and the
+  License Key API calls.
+- The `UtaServiceNotEnabledError` message points at the manage page on
+  `https://www.usethatapp.com` — not the resolved `api_url`, which a
+  `configure(api_url=…)` override can aim at a host with no manage UI.
+- README: the error table names the add-on by its current public name
+  (Hosted sign-in), documents the 429 → `UtaServerError` +
+  `retry_after` mapping, and the `product_id` guidance matches the
+  post-cutover alias contract everywhere.
+
 ### Added
 
 - `LicenseState.product_id` — an equal-valued alias of

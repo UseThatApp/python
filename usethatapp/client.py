@@ -205,13 +205,32 @@ def userinfo(access_token: str) -> Dict[str, Any]:
     except httpx.RequestError as e:
         raise UtaServerError(f"network error calling userinfo: {e}")
     if resp.status_code == 401:
-        raise UtaTokenError(f"401 from userinfo: {resp.text}")
+        raise UtaTokenError(f"401 from userinfo: {_snippet(resp.text)}")
     if resp.status_code == 403:
-        raise UtaPermissionError(f"403 from userinfo — token lacks required scope: {resp.text}")
+        raise UtaPermissionError(
+            f"403 from userinfo — token lacks required scope: "
+            f"{_snippet(resp.text)}"
+        )
+    # Same 429/5xx contract as every other endpoint (finding 4): the
+    # backoff loop this release invites — `except UtaServerError as e:
+    # sleep(e.retry_after or 5)` — must work when the SAME rate limiter
+    # throttles userinfo during login.
+    if resp.status_code == 429:
+        raise UtaServerError(
+            f"429 from userinfo — rate limited, retry with backoff: "
+            f"{_snippet(resp.text)}",
+            retry_after=_retry_after(resp),
+        )
     if resp.status_code >= 500:
-        raise UtaServerError(f"{resp.status_code} from userinfo: {resp.text}")
+        raise UtaServerError(
+            f"{resp.status_code} from userinfo: {_snippet(resp.text)}",
+            retry_after=_retry_after(resp),
+        )
     if not (200 <= resp.status_code < 300):
-        raise UtaError(f"unexpected status {resp.status_code} from userinfo: {resp.text}")
+        raise UtaError(
+            f"unexpected status {resp.status_code} from userinfo: "
+            f"{_snippet(resp.text)}"
+        )
     try:
         return cast(Dict[str, Any], resp.json())
     except ValueError as e:
@@ -262,7 +281,12 @@ def get_entitlement(access_token: str, *, timeout: Optional[float] = None) -> En
         resp = httpx.get(
             url,
             headers={"Authorization": f"Bearer {access_token}"},
-            timeout=timeout or cfg.request_timeout_seconds,
+            # `is not None`, never `or`: timeout=0.0 is a legitimate
+            # fail-fast probe (finding 8).
+            timeout=(
+                timeout if timeout is not None
+                else cfg.request_timeout_seconds
+            ),
             follow_redirects=True,
         )
     except httpx.RequestError as e:
@@ -281,7 +305,11 @@ async def get_entitlement_async(
     url = cfg.api_url + _ENTITLEMENT_PATH
     try:
         async with httpx.AsyncClient(
-            timeout=timeout or cfg.request_timeout_seconds, follow_redirects=True
+            timeout=(
+                timeout if timeout is not None
+                else cfg.request_timeout_seconds
+            ),
+            follow_redirects=True
         ) as client:
             resp = await client.get(
                 url, headers={"Authorization": f"Bearer {access_token}"}
@@ -397,9 +425,10 @@ def get_prices(*, timeout: Optional[float] = None) -> AppPrices:
     sellers can change prices at any time. Each :class:`~usethatapp.Price`
     carries a ready-made hosted checkout ``buy_url`` and the opaque
     ``product_id`` to gate on — compare it against
-    :attr:`Entitlement.product_public_id` (``Entitlement.product_id``
-    still carries the legacy UUID until the platform's identifier
-    cutover).
+    :attr:`Entitlement.product_id` or
+    :attr:`Entitlement.product_public_id`: since the platform's
+    identifier cutover they are a permanent equal-valued alias pair
+    carrying the same ``prod_…`` id, so gate on either.
     """
     url = _public_app_url() + "prices/"
     try:
@@ -468,8 +497,20 @@ def _token_request(
         )
     except httpx.RequestError as e:
         raise UtaServerError(f"network error calling token endpoint: {e}")
+    # A throttled token refresh is retriable server pushback, not a
+    # credential failure — it must NOT surface as UtaTokenError, which
+    # callers treat as "log the user out" (finding 4).
+    if resp.status_code == 429:
+        raise UtaServerError(
+            f"429 from token endpoint — rate limited, retry with "
+            f"backoff: {_snippet(resp.text)}",
+            retry_after=_retry_after(resp),
+        )
     if resp.status_code >= 500:
-        raise UtaServerError(f"{resp.status_code} from token endpoint: {resp.text}")
+        raise UtaServerError(
+            f"{resp.status_code} from token endpoint: {_snippet(resp.text)}",
+            retry_after=_retry_after(resp),
+        )
     payload = _json(resp, error_cls=UtaTokenError)
     if resp.status_code != 200 or "error" in payload:
         err = payload.get("error", f"http_{resp.status_code}")
@@ -561,7 +602,11 @@ def _retry_after(resp) -> "Optional[int]":
     if raw is None:
         return None
     raw = raw.strip()
-    if not raw.isdigit():
+    # isascii() too: Unicode digit-property characters ('²', '٣', …)
+    # pass isdigit() but crash int(), turning a 429 into an uncaught
+    # ValueError that bypasses every `except UtaError` (code review
+    # finding 3, reproduced with the latin-1 byte 0xB2).
+    if not (raw.isascii() and raw.isdigit()):
         return None
     return int(raw)
 
@@ -579,11 +624,15 @@ def _raise_for_entitlement_status(status: int, body_text: str, retry_after=None)
         # service_not_enabled (the developer must enable the add-on —
         # nothing in this process will fix it).
         if _error_code(body_text) == "service_not_enabled":
+            # The manage hub lives on the production dashboard host —
+            # NEVER the resolved api_url, which configure(api_url=…) can
+            # point at a dev stack or gateway with no manage UI
+            # (finding 10).
             raise UtaServiceNotEnabledError(
                 "403 from entitlement — Hosted sign-in is not enabled "
                 "for this app. The developer can turn on the Hosted "
-                "sign-in add-on from the app's manage hub at "
-                f"{_config.resolve_api_url()} (Integration panel): "
+                "sign-in add-on from the app's manage page on "
+                f"{_config.DEFAULT_API_URL} (Integration panel): "
                 f"{_snippet(body_text)}"
             )
         raise UtaPermissionError(f"403 from entitlement — missing 'entitlements' scope: {_snippet(body_text)}")
@@ -602,20 +651,16 @@ def _raise_for_entitlement_status(status: int, body_text: str, retry_after=None)
 
 
 def _snippet(body_text: str, limit: int = 200) -> str:
-    """Error bodies get quoted into exception messages. A JSON error body
-    is short and worth quoting whole; a non-JSON body (an HTML error page
-    — a proxy's, or a server debug page) is kilobytes of markup that bury
-    the message, so quote only its head."""
-    text = body_text.strip()
-    try:
-        json.loads(text)
-        return text
-    except ValueError:
-        pass
-    collapsed = " ".join(text.split())
+    """Error bodies get quoted into exception messages: collapsed to one
+    line and capped at ``limit`` characters — uniformly. JSON gets no
+    exemption: a DRF validation map or debug-mode JSON 500 can carry a
+    multi-kilobyte embedded traceback, exactly the log-flooding this cap
+    exists to stop (code review finding 5 — the old code quoted anything
+    json.loads accepted whole, and paid a throwaway parse to do it)."""
+    collapsed = " ".join(body_text.split())
     if len(collapsed) <= limit:
         return collapsed
-    return collapsed[:limit] + f"… [{len(body_text)} bytes truncated]"
+    return collapsed[:limit] + f"… [{len(collapsed) - limit} more chars truncated]"
 
 
 def _error_code(body_text: str) -> str:
@@ -637,7 +682,13 @@ def _parse_entitlement(data: Mapping[str, Any]) -> Entitlement:
     return Entitlement(
         entitled=bool(data.get("entitled", False)),
         version=data.get("version"),
-        product_id=data.get("product_id"),
+        # Alias pair: fall back to product_public_id against a server
+        # that predates the identifier cutover — the same fallback the
+        # LicenseState parser carries, so the types.py promise ("gate on
+        # either field") holds in BOTH verification modes (finding 1).
+        product_id=(
+            data.get("product_id") or data.get("product_public_id")
+        ),
         status=str(data.get("status", "none")),
         is_free=bool(data.get("is_free", False)),
         period_end=data.get("period_end"),
@@ -841,7 +892,12 @@ def _license_api_request(
             cfg.api_url + path,
             json=json_body,
             headers=_license_api_auth(cfg),
-            timeout=timeout or cfg.request_timeout_seconds,
+            # `is not None`, never `or`: timeout=0.0 is a legitimate
+            # fail-fast probe (finding 8).
+            timeout=(
+                timeout if timeout is not None
+                else cfg.request_timeout_seconds
+            ),
             follow_redirects=False,
         )
     except httpx.RequestError as e:

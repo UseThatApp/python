@@ -6,6 +6,8 @@ from urllib.parse import parse_qs, urlparse
 import httpx
 import pytest
 
+import json
+
 from usethatapp import (
     begin_login,
     complete_login,
@@ -187,11 +189,15 @@ def test_get_entitlement_service_not_enabled(oidc_routes):
     with pytest.raises(UtaServiceNotEnabledError, match="Hosted sign-in") as exc_info:
         get_entitlement("at-123")
     assert issubclass(UtaServiceNotEnabledError, UtaPermissionError)
-    # Glassbox F-10: the message names the CURRENT public feature name and
-    # points at the configured host, never a hardcoded usethatapp.com.
+    # Glassbox F-10: the message names the CURRENT public feature name.
+    # Code review finding 10 (reversing F-10's host half): the manage
+    # hub lives on the production dashboard host — the configured
+    # api_url may be a dev stack or gateway with no manage UI, so the
+    # message must NOT point there.
     message = str(exc_info.value)
     assert "Auth & Entitlement" not in message
-    assert API_URL in message
+    assert "https://www.usethatapp.com" in message
+    assert API_URL not in message
 
 
 def test_get_entitlement_scope_403_still_permission_error(oidc_routes):
@@ -300,10 +306,11 @@ def test_get_entitlement_429_maps_to_server_error(oidc_routes):
         get_entitlement("at-123")
 
 
-def test_snippet_quotes_json_whole_and_truncates_html():
-    """Glassbox F-11: a JSON error body is quoted whole; a non-JSON body
-    (an HTML error page) is collapsed and capped so exception messages
-    stay one readable line."""
+def test_snippet_caps_every_body_shape():
+    """Glassbox F-11 + code review finding 5: ALL bodies are collapsed
+    and capped — JSON gets no exemption, because a DRF validation map or
+    debug-mode JSON 500 can carry a multi-kilobyte traceback (the
+    log-flooding the cap exists to stop). Short bodies pass whole."""
     from usethatapp.client import _snippet
 
     json_body = '{"error": "unknown_key"}'
@@ -313,6 +320,11 @@ def test_snippet_quotes_json_whole_and_truncates_html():
     out = _snippet(html)
     assert len(out) < 260
     assert "\n" not in out
+    assert "truncated" in out
+
+    big_json = json.dumps({"detail": "Traceback (most recent call last)" * 200})
+    out = _snippet(big_json)
+    assert len(out) < 260
     assert "truncated" in out
 
 
@@ -359,3 +371,83 @@ def test_retry_after_http_date_form_is_none(oidc_routes):
     with pytest.raises(UtaServerError) as exc_info:
         get_entitlement("at-123")
     assert exc_info.value.retry_after is None
+
+
+def test_entitlement_product_id_falls_back_to_public_id(oidc_routes):
+    """Code review finding 1: the alias promise in types.py ("gate on
+    either field") must hold against a server that predates the
+    identifier cutover — same fallback the LicenseState parser has."""
+    oidc_routes.get(API_URL + "/licensing/entitlement/").mock(
+        return_value=httpx.Response(200, json={
+            "entitled": True,
+            "version": "Pro",
+            "status": "active",
+            "product_public_id": "prod_abc123",
+            # no product_id field at all
+        })
+    )
+    ent = get_entitlement("at-123")
+    assert ent.product_id == "prod_abc123"
+    assert ent.product_id == ent.product_public_id
+
+
+def test_unicode_digit_retry_after_does_not_crash(oidc_routes):
+    """Code review finding 3 (reproduced): '²'.isdigit() is True but
+    int('²') raises — a malformed Retry-After must degrade to None, not
+    turn a 429 into an uncaught ValueError."""
+    oidc_routes.get(API_URL + "/licensing/entitlement/").mock(
+        # As the wire delivers it: the latin-1 byte 0xB2, which httpx
+        # decodes to '²' on read.
+        return_value=httpx.Response(
+            429, text="slow down", headers=[(b"Retry-After", b"\xb2")]
+        )
+    )
+    with pytest.raises(UtaServerError) as exc_info:
+        get_entitlement("at-123")
+    assert exc_info.value.retry_after is None
+
+
+def test_userinfo_429_is_retriable_with_retry_after(oidc_routes):
+    """Code review finding 4: the backoff loop this release invites must
+    work when the same rate limiter throttles userinfo during login."""
+    oidc_routes.get(METADATA["userinfo_endpoint"]).mock(
+        return_value=httpx.Response(
+            429, text="rate limited", headers={"Retry-After": "30"}
+        )
+    )
+    with pytest.raises(UtaServerError) as exc_info:
+        userinfo("at-123")
+    assert exc_info.value.retry_after == 30
+
+
+def test_token_endpoint_429_is_not_a_credential_failure(oidc_routes):
+    """Code review finding 4: a throttled token refresh is retriable
+    server pushback — surfacing it as UtaTokenError makes callers log
+    the user out instead of backing off."""
+    oidc_routes.post(METADATA["token_endpoint"]).mock(
+        return_value=httpx.Response(
+            429, text="rate limited", headers={"Retry-After": "15"}
+        )
+    )
+    with pytest.raises(UtaServerError) as exc_info:
+        refresh("rt-123")
+    assert exc_info.value.retry_after == 15
+
+
+def test_timeout_zero_is_respected(oidc_routes, monkeypatch):
+    """Code review finding 8: timeout=0.0 — expressible since the float
+    widening — is a fail-fast probe, not falsy noise to be replaced by
+    the configured default."""
+    seen = {}
+    real_get = httpx.get
+
+    def spying_get(url, **kwargs):
+        seen["timeout"] = kwargs.get("timeout")
+        return real_get(url, **kwargs)
+
+    monkeypatch.setattr(httpx, "get", spying_get)
+    oidc_routes.get(API_URL + "/licensing/entitlement/").mock(
+        return_value=httpx.Response(200, json={"entitled": False})
+    )
+    get_entitlement("at-123", timeout=0.0)
+    assert seen["timeout"] == 0.0

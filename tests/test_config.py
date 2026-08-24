@@ -123,3 +123,55 @@ def test_package_root_exports_the_config_api():
     ):
         assert name in usethatapp.__all__, name
         assert hasattr(usethatapp, name), name
+
+
+def test_configured_secret_path_outranks_env_secret(
+    clean_overrides, monkeypatch, tmp_path
+):
+    """Code review finding 2: precedence is decided per LAYER — a
+    configure() override of EITHER half of the secret pair must outrank
+    both env vars, or a stale deploy-env UTA_CLIENT_SECRET silently wins
+    over the secret file the developer just configured."""
+    import usethatapp
+
+    monkeypatch.setenv("UTA_CLIENT_SECRET", "stale-env-secret")
+    secret_file = tmp_path / "secret"
+    secret_file.write_text("fresh-file-secret\n")
+    usethatapp.configure(client_secret_path=str(secret_file))
+    cfg = uta_config.load(force=True)
+    assert cfg.client_secret == "fresh-file-secret"
+
+
+def test_env_secret_still_wins_within_its_own_layer(
+    clean_overrides, monkeypatch, tmp_path
+):
+    """Within one layer the direct value keeps winning over the path."""
+    monkeypatch.setenv("UTA_CLIENT_SECRET", "env-secret")
+    secret_file = tmp_path / "secret"
+    secret_file.write_text("file-secret")
+    monkeypatch.setenv("UTA_CLIENT_SECRET_PATH", str(secret_file))
+    cfg = uta_config.load(force=True)
+    assert cfg.client_secret == "env-secret"
+
+
+def test_configure_rejects_non_string_values(clean_overrides):
+    """Code review finding 6: wrong-typed values are rejected at the
+    call site, naming the option — never silently str()-coerced into a
+    corrupt value that surfaces later as an opaque OAuth error."""
+    import usethatapp
+    from usethatapp.errors import UtaConfigError
+
+    with pytest.raises(UtaConfigError, match="scopes.*spaces"):
+        usethatapp.configure(scopes=["openid", "entitlements"])
+
+    with pytest.raises(UtaConfigError, match="request_timeout_seconds"):
+        usethatapp.configure(request_timeout_seconds="5s")
+
+    with pytest.raises(UtaConfigError, match="api_url"):
+        usethatapp.configure(api_url=8000)
+
+    # Legitimate shapes still pass: str everywhere, int for the numerics.
+    usethatapp.configure(request_timeout_seconds=3, scopes="openid")
+    cfg = uta_config.load(force=True)
+    assert cfg.request_timeout_seconds == 3
+    assert cfg.scopes == "openid"
