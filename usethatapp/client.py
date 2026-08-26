@@ -593,7 +593,7 @@ def _session(
     )
 
 
-def _retry_after(resp) -> "Optional[int]":
+def _retry_after(resp: httpx.Response) -> "Optional[int]":
     """The ``Retry-After`` header in whole seconds, or None (absent or
     HTTP-date form). Threaded into every UtaServerError raise so a 429's
     backoff hint reaches the caller instead of being discarded one layer
@@ -611,7 +611,7 @@ def _retry_after(resp) -> "Optional[int]":
     return int(raw)
 
 
-def _raise_for_entitlement_status(status: int, body_text: str, retry_after=None) -> None:
+def _raise_for_entitlement_status(status: int, body_text: str, retry_after: Optional[int] = None) -> None:
     if 200 <= status < 300:
         return
     if status == 400:
@@ -712,7 +712,7 @@ def _public_timeout(timeout: Optional[float]) -> float:
     )
 
 
-def _raise_for_public_api_status(status: int, body_text: str, *, endpoint: str, retry_after=None) -> None:
+def _raise_for_public_api_status(status: int, body_text: str, *, endpoint: str, retry_after: Optional[int] = None) -> None:
     if 200 <= status < 300:
         return
     if status == 404:
@@ -811,7 +811,7 @@ __all__ = [
 # and secret over HTTP Basic. No end user, no browser, no OIDC — this is
 # how an app that keeps its own auth verifies UseThatApp purchases.
 
-def _license_api_auth(cfg) -> dict:
+def _license_api_auth(cfg: "_config.UtaConfig") -> dict[str, str]:
     import base64 as _b64
 
     if not cfg.client_secret:
@@ -826,7 +826,7 @@ def _license_api_auth(cfg) -> dict:
     return {"Authorization": f"Basic {token}"}
 
 
-def _raise_for_license_api_status(status: int, body_text: str, retry_after=None) -> None:
+def _raise_for_license_api_status(status: int, body_text: str, retry_after: Optional[int] = None) -> None:
     if 200 <= status < 300:
         return
     code = _error_code(body_text)
@@ -882,7 +882,7 @@ def _license_api_request(
     method: str,
     path: str,
     *,
-    json_body: Optional[dict] = None,
+    json_body: Optional[dict[str, Any]] = None,
     timeout: Optional[float] = None,
 ) -> LicenseState:
     cfg = _config.load()

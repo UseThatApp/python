@@ -36,7 +36,7 @@ _cached: Optional[UtaConfig] = None
 # In-code configuration overrides (Glassbox F-19: parity with the
 # JavaScript SDK's ``configure()``). Highest precedence: consulted before
 # Django settings and the environment.
-_overrides: dict = {}
+_overrides: dict[str, Any] = {}
 
 # Integer-valued options: validated as int (or digit string) up front.
 _INT_OVERRIDES = frozenset({

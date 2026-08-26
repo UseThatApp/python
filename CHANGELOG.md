@@ -6,9 +6,14 @@ format inspired by "Keep a Changelog".
 
 ## [Unreleased]
 
-## [2.2.0] - 2026-08-23
+## [2.2.0] - 2026-08-25
 
 ### Fixed (pre-release code review)
+
+- The nine annotations the pre-release commits left untyped (most
+  visibly `UtaServerError.__init__`'s `retry_after`, which a
+  downstream strict type checker saw as `Any`) are restored —
+  `mypy --strict` is green again, as `py.typed` promises.
 
 - `Entitlement.product_id` now carries the same
   fall-back-to-`product_public_id` parsing as `LicenseState.product_id`,
