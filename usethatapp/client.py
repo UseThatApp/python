@@ -31,12 +31,17 @@ from . import config as _config
 from . import discovery as _discovery
 from .errors import (
     UtaAuthError,
+    UtaConfigError,
     UtaError,
+    UtaLicenseCanceledError,
+    UtaNotFoundError,
+    UtaOrderProcessingError,
     UtaPermissionError,
     UtaServerError,
+    UtaServiceNotEnabledError,
     UtaTokenError,
 )
-from .types import AppInfo, AppPrices, Entitlement, Price, UtaSession
+from .types import AppInfo, AppPrices, Entitlement, LicenseState, Price, UtaSession
 
 _ENTITLEMENT_PATH = "/licensing/entitlement/"
 _PUBLIC_APPS_PATH = "/api/v1/public/apps/"
@@ -66,12 +71,17 @@ def begin_login(
     callback. ``flow_state`` is a plain JSON-serializable dict.
     """
     cfg = _config.load()
+    redirect = redirect_uri or cfg.redirect_uri
+    if not redirect:
+        raise UtaConfigError(
+            "UTA_REDIRECT_URI is required for the login flow (only the "
+            "License Key API works without it)"
+        )
     meta = _discovery.get_metadata(cfg)
 
     code_verifier = secrets.token_urlsafe(64)
     state = secrets.token_urlsafe(32)
     nonce = secrets.token_urlsafe(32)
-    redirect = redirect_uri or cfg.redirect_uri
 
     params: Dict[str, str] = {
         "response_type": "code",
@@ -195,13 +205,32 @@ def userinfo(access_token: str) -> Dict[str, Any]:
     except httpx.RequestError as e:
         raise UtaServerError(f"network error calling userinfo: {e}")
     if resp.status_code == 401:
-        raise UtaTokenError(f"401 from userinfo: {resp.text}")
+        raise UtaTokenError(f"401 from userinfo: {_snippet(resp.text)}")
     if resp.status_code == 403:
-        raise UtaPermissionError(f"403 from userinfo — token lacks required scope: {resp.text}")
+        raise UtaPermissionError(
+            f"403 from userinfo — token lacks required scope: "
+            f"{_snippet(resp.text)}"
+        )
+    # Same 429/5xx contract as every other endpoint (finding 4): the
+    # backoff loop this release invites — `except UtaServerError as e:
+    # sleep(e.retry_after or 5)` — must work when the SAME rate limiter
+    # throttles userinfo during login.
+    if resp.status_code == 429:
+        raise UtaServerError(
+            f"429 from userinfo — rate limited, retry with backoff: "
+            f"{_snippet(resp.text)}",
+            retry_after=_retry_after(resp),
+        )
     if resp.status_code >= 500:
-        raise UtaServerError(f"{resp.status_code} from userinfo: {resp.text}")
+        raise UtaServerError(
+            f"{resp.status_code} from userinfo: {_snippet(resp.text)}",
+            retry_after=_retry_after(resp),
+        )
     if not (200 <= resp.status_code < 300):
-        raise UtaError(f"unexpected status {resp.status_code} from userinfo: {resp.text}")
+        raise UtaError(
+            f"unexpected status {resp.status_code} from userinfo: "
+            f"{_snippet(resp.text)}"
+        )
     try:
         return cast(Dict[str, Any], resp.json())
     except ValueError as e:
@@ -237,7 +266,7 @@ def logout_url(
 # Entitlement (the OAuth-era replacement for get_version)
 # ──────────────────────────────────────────────────────────────────────
 
-def get_entitlement(access_token: str, *, timeout: Optional[int] = None) -> Entitlement:
+def get_entitlement(access_token: str, *, timeout: Optional[float] = None) -> Entitlement:
     """Query the user's live license state for your app.
 
     Sends ``Authorization: Bearer <access_token>`` to
@@ -252,17 +281,22 @@ def get_entitlement(access_token: str, *, timeout: Optional[int] = None) -> Enti
         resp = httpx.get(
             url,
             headers={"Authorization": f"Bearer {access_token}"},
-            timeout=timeout or cfg.request_timeout_seconds,
+            # `is not None`, never `or`: timeout=0.0 is a legitimate
+            # fail-fast probe (finding 8).
+            timeout=(
+                timeout if timeout is not None
+                else cfg.request_timeout_seconds
+            ),
             follow_redirects=True,
         )
     except httpx.RequestError as e:
         raise UtaServerError(f"network error calling entitlement: {e}")
-    _raise_for_entitlement_status(resp.status_code, resp.text)
+    _raise_for_entitlement_status(resp.status_code, resp.text, retry_after=_retry_after(resp))
     return _parse_entitlement(_json(resp))
 
 
 async def get_entitlement_async(
-    access_token: str, *, timeout: Optional[int] = None
+    access_token: str, *, timeout: Optional[float] = None
 ) -> Entitlement:
     """Async variant of :func:`get_entitlement`."""
     cfg = _config.load()
@@ -271,14 +305,18 @@ async def get_entitlement_async(
     url = cfg.api_url + _ENTITLEMENT_PATH
     try:
         async with httpx.AsyncClient(
-            timeout=timeout or cfg.request_timeout_seconds, follow_redirects=True
+            timeout=(
+                timeout if timeout is not None
+                else cfg.request_timeout_seconds
+            ),
+            follow_redirects=True
         ) as client:
             resp = await client.get(
                 url, headers={"Authorization": f"Bearer {access_token}"}
             )
     except httpx.RequestError as e:
         raise UtaServerError(f"network error calling entitlement: {e}")
-    _raise_for_entitlement_status(resp.status_code, resp.text)
+    _raise_for_entitlement_status(resp.status_code, resp.text, retry_after=_retry_after(resp))
     return _parse_entitlement(_json(resp))
 
 
@@ -356,7 +394,10 @@ def get_app_info(*, timeout: Optional[float] = None) -> AppInfo:
         )
     except httpx.RequestError as e:
         raise UtaServerError(f"network error calling app info: {e}")
-    _raise_for_public_api_status(resp.status_code, resp.text, endpoint="app info")
+    _raise_for_public_api_status(
+        resp.status_code, resp.text, endpoint="app info",
+        retry_after=_retry_after(resp),
+    )
     return _parse_app_info(_json(resp))
 
 
@@ -370,7 +411,10 @@ async def get_app_info_async(*, timeout: Optional[float] = None) -> AppInfo:
             resp = await client.get(url)
     except httpx.RequestError as e:
         raise UtaServerError(f"network error calling app info: {e}")
-    _raise_for_public_api_status(resp.status_code, resp.text, endpoint="app info")
+    _raise_for_public_api_status(
+        resp.status_code, resp.text, endpoint="app info",
+        retry_after=_retry_after(resp),
+    )
     return _parse_app_info(_json(resp))
 
 
@@ -381,9 +425,10 @@ def get_prices(*, timeout: Optional[float] = None) -> AppPrices:
     sellers can change prices at any time. Each :class:`~usethatapp.Price`
     carries a ready-made hosted checkout ``buy_url`` and the opaque
     ``product_id`` to gate on — compare it against
-    :attr:`Entitlement.product_public_id` (``Entitlement.product_id``
-    still carries the legacy UUID until the platform's identifier
-    cutover).
+    :attr:`Entitlement.product_id` or
+    :attr:`Entitlement.product_public_id`: since the platform's
+    identifier cutover they are a permanent equal-valued alias pair
+    carrying the same ``prod_…`` id, so gate on either.
     """
     url = _public_app_url() + "prices/"
     try:
@@ -394,7 +439,10 @@ def get_prices(*, timeout: Optional[float] = None) -> AppPrices:
         )
     except httpx.RequestError as e:
         raise UtaServerError(f"network error calling prices: {e}")
-    _raise_for_public_api_status(resp.status_code, resp.text, endpoint="prices")
+    _raise_for_public_api_status(
+        resp.status_code, resp.text, endpoint="prices",
+        retry_after=_retry_after(resp),
+    )
     return _parse_app_prices(_json(resp))
 
 
@@ -408,7 +456,10 @@ async def get_prices_async(*, timeout: Optional[float] = None) -> AppPrices:
             resp = await client.get(url)
     except httpx.RequestError as e:
         raise UtaServerError(f"network error calling prices: {e}")
-    _raise_for_public_api_status(resp.status_code, resp.text, endpoint="prices")
+    _raise_for_public_api_status(
+        resp.status_code, resp.text, endpoint="prices",
+        retry_after=_retry_after(resp),
+    )
     return _parse_app_prices(_json(resp))
 
 
@@ -446,8 +497,20 @@ def _token_request(
         )
     except httpx.RequestError as e:
         raise UtaServerError(f"network error calling token endpoint: {e}")
+    # A throttled token refresh is retriable server pushback, not a
+    # credential failure — it must NOT surface as UtaTokenError, which
+    # callers treat as "log the user out" (finding 4).
+    if resp.status_code == 429:
+        raise UtaServerError(
+            f"429 from token endpoint — rate limited, retry with "
+            f"backoff: {_snippet(resp.text)}",
+            retry_after=_retry_after(resp),
+        )
     if resp.status_code >= 500:
-        raise UtaServerError(f"{resp.status_code} from token endpoint: {resp.text}")
+        raise UtaServerError(
+            f"{resp.status_code} from token endpoint: {_snippet(resp.text)}",
+            retry_after=_retry_after(resp),
+        )
     payload = _json(resp, error_cls=UtaTokenError)
     if resp.status_code != 200 or "error" in payload:
         err = payload.get("error", f"http_{resp.status_code}")
@@ -530,18 +593,87 @@ def _session(
     )
 
 
-def _raise_for_entitlement_status(status: int, body_text: str) -> None:
+def _retry_after(resp) -> "Optional[int]":
+    """The ``Retry-After`` header in whole seconds, or None (absent or
+    HTTP-date form). Threaded into every UtaServerError raise so a 429's
+    backoff hint reaches the caller instead of being discarded one layer
+    below them (Quiver J-05 — same fix as the JS SDK's ``retryAfter``)."""
+    raw = resp.headers.get("Retry-After")
+    if raw is None:
+        return None
+    raw = raw.strip()
+    # isascii() too: Unicode digit-property characters ('²', '٣', …)
+    # pass isdigit() but crash int(), turning a 429 into an uncaught
+    # ValueError that bypasses every `except UtaError` (code review
+    # finding 3, reproduced with the latin-1 byte 0xB2).
+    if not (raw.isascii() and raw.isdigit()):
+        return None
+    return int(raw)
+
+
+def _raise_for_entitlement_status(status: int, body_text: str, retry_after=None) -> None:
     if 200 <= status < 300:
         return
     if status == 400:
-        raise UtaError(f"400 from entitlement (client not linked to an app?): {body_text}")
+        raise UtaError(f"400 from entitlement (client not linked to an app?): {_snippet(body_text)}")
     if status == 401:
-        raise UtaTokenError(f"401 from entitlement — access token invalid/expired: {body_text}")
+        raise UtaTokenError(f"401 from entitlement — access token invalid/expired: {_snippet(body_text)}")
     if status == 403:
-        raise UtaPermissionError(f"403 from entitlement — missing 'entitlements' scope: {body_text}")
+        # Two distinct 403s (see the server's EntitlementView contract):
+        # insufficient_scope (fix the requested scopes) vs
+        # service_not_enabled (the developer must enable the add-on —
+        # nothing in this process will fix it).
+        if _error_code(body_text) == "service_not_enabled":
+            # The manage hub lives on the production dashboard host —
+            # NEVER the resolved api_url, which configure(api_url=…) can
+            # point at a dev stack or gateway with no manage UI
+            # (finding 10).
+            raise UtaServiceNotEnabledError(
+                "403 from entitlement — Hosted sign-in is not enabled "
+                "for this app. The developer can turn on the Hosted "
+                "sign-in add-on from the app's manage page on "
+                f"{_config.DEFAULT_API_URL} (Integration panel): "
+                f"{_snippet(body_text)}"
+            )
+        raise UtaPermissionError(f"403 from entitlement — missing 'entitlements' scope: {_snippet(body_text)}")
+    if status == 429:
+        raise UtaServerError(
+            f"429 from entitlement — rate limited, retry with backoff: "
+            f"{_snippet(body_text)}",
+            retry_after=retry_after,
+        )
     if 500 <= status < 600:
-        raise UtaServerError(f"{status} from entitlement: {body_text}")
-    raise UtaError(f"unexpected status {status} from entitlement: {body_text}")
+        raise UtaServerError(
+            f"{status} from entitlement: {_snippet(body_text)}",
+            retry_after=retry_after,
+        )
+    raise UtaError(f"unexpected status {status} from entitlement: {_snippet(body_text)}")
+
+
+def _snippet(body_text: str, limit: int = 200) -> str:
+    """Error bodies get quoted into exception messages: collapsed to one
+    line and capped at ``limit`` characters — uniformly. JSON gets no
+    exemption: a DRF validation map or debug-mode JSON 500 can carry a
+    multi-kilobyte embedded traceback, exactly the log-flooding this cap
+    exists to stop (code review finding 5 — the old code quoted anything
+    json.loads accepted whole, and paid a throwaway parse to do it)."""
+    collapsed = " ".join(body_text.split())
+    if len(collapsed) <= limit:
+        return collapsed
+    return collapsed[:limit] + f"… [{len(collapsed) - limit} more chars truncated]"
+
+
+def _error_code(body_text: str) -> str:
+    """The ``error`` field of a JSON error body, or "" when the body is
+    not JSON / not a mapping / has no string error code."""
+    try:
+        data = json.loads(body_text)
+    except ValueError:
+        return ""
+    if not isinstance(data, dict):
+        return ""
+    code = data.get("error")
+    return code if isinstance(code, str) else ""
 
 
 def _parse_entitlement(data: Mapping[str, Any]) -> Entitlement:
@@ -550,7 +682,13 @@ def _parse_entitlement(data: Mapping[str, Any]) -> Entitlement:
     return Entitlement(
         entitled=bool(data.get("entitled", False)),
         version=data.get("version"),
-        product_id=data.get("product_id"),
+        # Alias pair: fall back to product_public_id against a server
+        # that predates the identifier cutover — the same fallback the
+        # LicenseState parser carries, so the types.py promise ("gate on
+        # either field") holds in BOTH verification modes (finding 1).
+        product_id=(
+            data.get("product_id") or data.get("product_public_id")
+        ),
         status=str(data.get("status", "none")),
         is_free=bool(data.get("is_free", False)),
         period_end=data.get("period_end"),
@@ -574,22 +712,26 @@ def _public_timeout(timeout: Optional[float]) -> float:
     )
 
 
-def _raise_for_public_api_status(status: int, body_text: str, *, endpoint: str) -> None:
+def _raise_for_public_api_status(status: int, body_text: str, *, endpoint: str, retry_after=None) -> None:
     if 200 <= status < 300:
         return
     if status == 404:
         raise UtaError(
             f"404 from {endpoint} — the app is unknown, unpublished, or "
-            f"external sales is not enabled for it: {body_text}"
+            f"external sales is not enabled for it: {_snippet(body_text)}"
         )
     if status == 429:
         raise UtaServerError(
             f"429 from {endpoint} — rate limited (120 requests/minute per IP); "
-            f"retry with backoff: {body_text}"
+            f"retry with backoff: {_snippet(body_text)}",
+            retry_after=retry_after,
         )
     if 500 <= status < 600:
-        raise UtaServerError(f"{status} from {endpoint}: {body_text}")
-    raise UtaError(f"unexpected status {status} from {endpoint}: {body_text}")
+        raise UtaServerError(
+            f"{status} from {endpoint}: {_snippet(body_text)}",
+            retry_after=retry_after,
+        )
+    raise UtaError(f"unexpected status {status} from {endpoint}: {_snippet(body_text)}")
 
 
 def _parse_app_info(data: Mapping[str, Any]) -> AppInfo:
@@ -659,3 +801,169 @@ __all__ = [
     "get_prices",
     "get_prices_async",
 ]
+
+
+# ──────────────────────────────────────────────────────────────────────
+# License Key API (bring-your-own-auth MoR verification)
+# ──────────────────────────────────────────────────────────────────────
+#
+# Server-to-server only: authenticated with your app's OAuth client id
+# and secret over HTTP Basic. No end user, no browser, no OIDC — this is
+# how an app that keeps its own auth verifies UseThatApp purchases.
+
+def _license_api_auth(cfg) -> dict:
+    import base64 as _b64
+
+    if not cfg.client_secret:
+        raise UtaConfigError(
+            "UTA_CLIENT_SECRET is required for the License Key API "
+            "(server-side calls authenticate with your app's client "
+            "credentials)"
+        )
+    token = _b64.b64encode(
+        f"{cfg.client_id}:{cfg.client_secret}".encode()
+    ).decode()
+    return {"Authorization": f"Basic {token}"}
+
+
+def _raise_for_license_api_status(status: int, body_text: str, retry_after=None) -> None:
+    if 200 <= status < 300:
+        return
+    code = _error_code(body_text)
+    if status == 401:
+        raise UtaConfigError(
+            f"client credentials rejected — check UTA_CLIENT_ID / "
+            f"UTA_CLIENT_SECRET: {_snippet(body_text)}"
+        )
+    if status == 404:
+        raise UtaNotFoundError(
+            f"{code or 'not found'}: {_snippet(body_text)}", code=code
+        )
+    if status == 409:
+        raise UtaLicenseCanceledError(
+            f"license is canceled — its key cannot be regenerated: {_snippet(body_text)}"
+        )
+    if status == 400:
+        raise UtaError(f"400 from license API: {_snippet(body_text)}")
+    if status == 429:
+        raise UtaServerError(
+            f"429 from license API — rate limited, retry with backoff: {_snippet(body_text)}",
+            retry_after=retry_after,
+        )
+    if 500 <= status < 600:
+        raise UtaServerError(
+            f"{status} from license API: {_snippet(body_text)}",
+            retry_after=retry_after,
+        )
+    raise UtaError(f"unexpected status {status} from license API: {_snippet(body_text)}")
+
+
+def _parse_license_state(data: Mapping[str, Any]) -> LicenseState:
+    if not isinstance(data, Mapping):
+        raise UtaError("license API response is not a JSON object")
+    return LicenseState(
+        entitled=bool(data.get("entitled")),
+        status=str(data.get("status") or ""),
+        license_id=str(data.get("license_id") or ""),
+        product_public_id=str(data.get("product_public_id") or ""),
+        period_end=data.get("period_end"),
+        canceled_at=data.get("canceled_at"),
+        license_key=data.get("license_key"),
+        rotated_at=data.get("rotated_at"),
+        # Alias pair: fall back to product_public_id against a server
+        # that predates the identifier cutover.
+        product_id=str(
+            data.get("product_id") or data.get("product_public_id") or ""
+        ),
+    )
+
+
+def _license_api_request(
+    method: str,
+    path: str,
+    *,
+    json_body: Optional[dict] = None,
+    timeout: Optional[float] = None,
+) -> LicenseState:
+    cfg = _config.load()
+    try:
+        resp = httpx.request(
+            method,
+            cfg.api_url + path,
+            json=json_body,
+            headers=_license_api_auth(cfg),
+            # `is not None`, never `or`: timeout=0.0 is a legitimate
+            # fail-fast probe (finding 8).
+            timeout=(
+                timeout if timeout is not None
+                else cfg.request_timeout_seconds
+            ),
+            follow_redirects=False,
+        )
+    except httpx.RequestError as e:
+        raise UtaServerError(f"network error calling license API: {e}")
+    if resp.status_code == 202:
+        raise UtaOrderProcessingError(
+            "order confirmed but its license hasn't landed yet — retry "
+            "in a few seconds"
+        )
+    _raise_for_license_api_status(
+        resp.status_code, resp.text, retry_after=_retry_after(resp)
+    )
+    return _parse_license_state(_json(resp))
+
+
+def validate_license_key(key: str, *, timeout: Optional[float] = None) -> LicenseState:
+    """The live state of a license key your user presented.
+
+    Raises :class:`UtaNotFoundError` (``code="unknown_key"``) for a key
+    UseThatApp never issued for your app. A canceled purchase does NOT
+    raise — it returns ``entitled=False, status="canceled"``, because a
+    key you once accepted deserves a lifecycle answer, not an error.
+    """
+    if not key or not isinstance(key, str):
+        raise UtaError("key must be a non-empty string")
+    return _license_api_request(
+        "POST", "/api/v1/licenses/validate", json_body={"key": key},
+        timeout=timeout,
+    )
+
+
+def get_order(ref: str, *, timeout: Optional[float] = None) -> LicenseState:
+    """Exchange the ``uta_order`` handback for the buyer's license key.
+
+    ``ref`` arrives as the ``uta_order`` query parameter on your
+    post-checkout return URL. The result carries ``license_key`` — link
+    it to your own signed-in user and you never need email matching.
+    Raises :class:`UtaOrderProcessingError` when the payment cleared but
+    the license hasn't landed yet (retry briefly), and
+    :class:`UtaNotFoundError` (``code="unknown_order"``) for a bad or
+    expired ref.
+    """
+    if not ref or not isinstance(ref, str):
+        raise UtaError("ref must be a non-empty string")
+    return _license_api_request(
+        "GET", "/api/v1/orders/" + quote(ref, safe=""), timeout=timeout
+    )
+
+
+def regenerate_license_key(
+    license_id: str, *, timeout: Optional[float] = None
+) -> LicenseState:
+    """Mint a replacement key for one license; the old key dies now.
+
+    The compromise kill switch — a merely-lost key is self-serve for the
+    buyer on their UseThatApp management page, so reach for this only
+    when a key must be revoked. The result's ``license_key`` is the new
+    key; deliver it to your customer yourself. Raises
+    :class:`UtaNotFoundError` (``code="unknown_license"``) for a license
+    that isn't your app's, and :class:`UtaLicenseCanceledError` for a
+    terminally canceled one.
+    """
+    if not license_id or not isinstance(license_id, str):
+        raise UtaError("license_id must be a non-empty string")
+    return _license_api_request(
+        "POST",
+        f"/api/v1/licenses/{quote(str(license_id), safe='')}/regenerate-key",
+        timeout=timeout,
+    )

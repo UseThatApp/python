@@ -4,6 +4,109 @@ All notable changes to this project are documented in this file. This project ad
 [Semantic Versioning](https://semver.org/) and follows a clear, machine- and human-readable
 format inspired by "Keep a Changelog".
 
+## [Unreleased]
+
+## [2.2.0] - 2026-08-23
+
+### Fixed (pre-release code review)
+
+- `Entitlement.product_id` now carries the same
+  fall-back-to-`product_public_id` parsing as `LicenseState.product_id`,
+  so the alias contract ("gate on either field") holds in both
+  verification modes — previously only the License Key API parser had
+  the fallback.
+- `configure(client_secret_path=…)` now outranks an environment
+  `UTA_CLIENT_SECRET`: secret-pair precedence is decided per layer
+  (overrides → Django settings → environment), not per key.
+- `configure()` rejects wrong-typed values with a `UtaConfigError`
+  naming the option (e.g. a scopes *list* gets "join scope names with
+  spaces") instead of silently `str()`-coercing them into corrupt
+  values that surfaced later as opaque OAuth errors.
+- A malformed `Retry-After` header containing Unicode digit-property
+  characters (e.g. `²`) no longer escapes as an uncaught `ValueError`
+  from a 429 — it degrades to `retry_after=None`.
+- `userinfo()` and the token endpoint now speak the same 429/5xx
+  contract as every other endpoint: 429 raises retriable
+  `UtaServerError` with `retry_after` (a throttled token refresh is no
+  longer a `UtaTokenError`, which read as "log the user out"), and
+  their error messages cap quoted bodies like everywhere else.
+- The ~200-character error-body cap now applies to JSON bodies too —
+  a multi-kilobyte JSON error (DRF validation map, debug-mode 500) was
+  previously quoted whole — and the truncation suffix reports the
+  amount actually cut.
+- `timeout=0.0` (a fail-fast probe, expressible since the `float`
+  widening) is respected instead of being replaced by the configured
+  default in `get_entitlement`, `get_entitlement_async`, and the
+  License Key API calls.
+- The `UtaServiceNotEnabledError` message points at the manage page on
+  `https://www.usethatapp.com` — not the resolved `api_url`, which a
+  `configure(api_url=…)` override can aim at a host with no manage UI.
+- README: the error table names the add-on by its current public name
+  (Hosted sign-in), documents the 429 → `UtaServerError` +
+  `retry_after` mapping, and the `product_id` guidance matches the
+  post-cutover alias contract everywhere.
+
+### Added
+
+- `LicenseState.product_id` — an equal-valued alias of
+  `product_public_id` (the platform's post-cutover `prod_…` pair, the
+  same contract as the entitlement endpoint), with a parser fallback
+  against servers that predate the cutover.
+
+- **License Key API** (server-side, bring-your-own-auth MoR
+  verification): `validate_license_key(key)`, `get_order(ref)` for the
+  `uta_order` checkout handback, and `regenerate_license_key(license_id)`
+  as the compromise kill switch — all authenticated with your app's
+  client credentials (`UTA_CLIENT_SECRET` required; `UTA_REDIRECT_URI`
+  is no longer needed unless you use the OIDC login flow). New
+  `LicenseState` dataclass and typed errors: `UtaNotFoundError` (with
+  `.code`), `UtaOrderProcessingError`, `UtaLicenseCanceledError`.
+- `config.load()` no longer requires `UTA_REDIRECT_URI`; `begin_login()`
+  raises `UtaConfigError` if it is missing — keys-mode integrations
+  never redirect a browser.
+
+- `UtaServiceNotEnabledError` (subclass of `UtaPermissionError`), raised
+  when the entitlement endpoint returns `403 service_not_enabled`: the
+  app's developer has not enabled the Hosted sign-in add-on. The
+  previous behavior mislabeled this case as a missing `entitlements`
+  scope; the new error says the actual fix (enable the add-on on the
+  app's manage page). Existing `except UtaPermissionError` blocks catch
+  it unchanged.
+
+- In-code configuration: `configure(api_url=…, issuer=…, …)`,
+  `load_config()`, and `reset_config()` are now exported from the
+  package root, alongside `UtaConfig` and the `DEFAULT_API_URL` /
+  `DEFAULT_ISSUER` / `DEFAULT_SCOPES` constants — parity with the
+  JavaScript SDK's `configure()` / `loadConfig()` / `resetConfig()`.
+  Overrides win over Django settings and environment variables, and a
+  non-production `api_url` can now be corrected at runtime instead of
+  only through the process environment.
+
+- `UtaServerError.retry_after` — the server's `Retry-After` header in
+  seconds on a 429 (`None` otherwise), so backoff loops can use the
+  interval the platform actually sent instead of guessing. Matches the
+  JavaScript SDK's `retryAfter`.
+
+### Fixed
+
+- `UtaNotFoundError`, `UtaOrderProcessingError`, and
+  `UtaLicenseCanceledError` are now exported from the package root —
+  they were defined and documented but not importable as
+  `from usethatapp import …`.
+- The `UtaServiceNotEnabledError` message named the add-on by its
+  retired public name ("Auth & Entitlement") and hardcoded
+  `usethatapp.com`; it now says "Hosted sign-in" and points at the
+  configured `UTA_API_URL` host.
+- A `429` from the entitlement endpoint now raises `UtaServerError`
+  (the retry-with-backoff class, matching the License Key API and the
+  documented error table) instead of the base `UtaError`.
+- Non-JSON error bodies (HTML error pages) are collapsed and capped at
+  ~200 characters when quoted into exception messages, instead of
+  inlining the entire page.
+- `get_entitlement(timeout=)` and `get_entitlement_async(timeout=)` are
+  typed `Optional[float]`, matching every other function (they were
+  `Optional[int]`, failing strict type checks on e.g. `timeout=2.5`).
+
 ## [2.1.0] - 2026-08-11
 
 Thin, dependency-free support for selling your app from your own website

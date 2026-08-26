@@ -25,6 +25,9 @@ from .client import (
     get_app_info_async,
     get_entitlement,
     get_entitlement_async,
+    get_order,
+    regenerate_license_key,
+    validate_license_key,
     get_prices,
     get_prices_async,
     logout_url,
@@ -33,18 +36,38 @@ from .client import (
     refresh,
     userinfo,
 )
+from .config import (
+    DEFAULT_API_URL,
+    DEFAULT_ISSUER,
+    DEFAULT_SCOPES,
+    UtaConfig,
+    configure,
+    load_config,
+    reset_config,
+)
 from .errors import (
     UtaAuthError,
     UtaConfigError,
     UtaDiscoveryError,
     UtaError,
+    UtaLicenseCanceledError,
+    UtaNotFoundError,
+    UtaOrderProcessingError,
     UtaPermissionError,
+    UtaServiceNotEnabledError,
     UtaServerError,
     UtaTokenError,
 )
-from .types import AppInfo, AppPrices, Entitlement, Price, UtaSession
+from .types import (
+    AppInfo,
+    AppPrices,
+    Entitlement,
+    LicenseState,
+    Price,
+    UtaSession,
+)
 
-__version__ = "2.1.0"
+__version__ = "2.2.0"
 
 __all__ = [
     "__version__",
@@ -57,6 +80,10 @@ __all__ = [
     # entitlement
     "get_entitlement",
     "get_entitlement_async",
+    # license key API (bring-your-own-auth MoR verification)
+    "validate_license_key",
+    "get_order",
+    "regenerate_license_key",
     # purchase links & public pricing
     "purchase_url",
     "manage_url",
@@ -64,9 +91,19 @@ __all__ = [
     "get_app_info_async",
     "get_prices",
     "get_prices_async",
+    # configuration — in-code overrides, JS-SDK parity (configure /
+    # loadConfig / resetConfig over there)
+    "configure",
+    "load_config",
+    "reset_config",
+    "UtaConfig",
+    "DEFAULT_API_URL",
+    "DEFAULT_ISSUER",
+    "DEFAULT_SCOPES",
     # types
     "UtaSession",
     "Entitlement",
+    "LicenseState",
     "AppInfo",
     "Price",
     "AppPrices",
@@ -77,5 +114,11 @@ __all__ = [
     "UtaAuthError",
     "UtaTokenError",
     "UtaPermissionError",
+    "UtaServiceNotEnabledError",
+    # License Key API errors — callers catch these by name around
+    # validate_license_key / get_order / regenerate_license_key.
+    "UtaNotFoundError",
+    "UtaOrderProcessingError",
+    "UtaLicenseCanceledError",
     "UtaServerError",
 ]

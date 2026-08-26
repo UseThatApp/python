@@ -79,7 +79,9 @@ from usethatapp import (
     AppPrices,          # client_id, app_name, has_free_tier, prices
     # errors:
     UtaError, UtaConfigError, UtaDiscoveryError, UtaAuthError,
-    UtaTokenError, UtaPermissionError, UtaServerError,
+    UtaTokenError, UtaPermissionError, UtaServiceNotEnabledError,
+    UtaNotFoundError, UtaOrderProcessingError, UtaLicenseCanceledError,
+    UtaServerError,
 )
 ```
 
@@ -119,14 +121,48 @@ are documentation only — nothing framework-specific ships in the package.
 
 `get_entitlement` maps status codes to typed exceptions:
 
-| Status | Exception            | Meaning                                       |
-|--------|----------------------|-----------------------------------------------|
-| 401    | `UtaTokenError`      | Access token invalid/expired — re-auth/refresh.|
-| 403    | `UtaPermissionError` | Token lacks the `entitlements` scope.         |
-| 400    | `UtaError`           | Client not linked to an app (misconfig).      |
-| 5xx    | `UtaServerError`     | Retriable with backoff.                       |
+| Status | Exception                                     | Meaning                                       |
+|--------|-----------------------------------------------|-----------------------------------------------|
+| 401    | `UtaTokenError`                               | Access token invalid/expired — re-auth/refresh.|
+| 403 (`insufficient_scope`)   | `UtaPermissionError`            | Token lacks the `entitlements` scope.         |
+| 403 (`service_not_enabled`)  | `UtaServiceNotEnabledError`     | The Hosted sign-in add-on is switched off for this app. No retry, refresh, or re-consent will help — enable it on the app's manage page at www.usethatapp.com (Integration panel). |
+| 400    | `UtaError`                                    | Client not linked to an app (misconfig).      |
+| 429    | `UtaServerError`                              | Rate limited — back off; `e.retry_after` carries the server's `Retry-After` seconds (or `None`). |
+| 5xx    | `UtaServerError`                              | Retriable with backoff; `e.retry_after` when the server sent one. |
 
 All inherit from `UtaError` — catch that for a single `except` clause.
+`UtaServiceNotEnabledError` subclasses `UtaPermissionError`, so existing
+`except UtaPermissionError` blocks keep working unchanged.
+
+## License Key API — bring your own auth
+
+If you keep your own auth (Auth0, Clerk, homegrown) and use UseThatApp
+purely as merchant of record, skip the OIDC flow entirely and verify
+purchases with license keys. Server-side only; set `UTA_CLIENT_SECRET`
+(`UTA_REDIRECT_URI` is not needed for this mode).
+
+```python
+from usethatapp import get_order, regenerate_license_key, validate_license_key
+
+# 1) The buyer returns from checkout with ?uta_order=... — exchange it
+#    for their key and link it to YOUR signed-in user. No email matching.
+order = get_order(request.GET["uta_order"])   # raises UtaOrderProcessingError → retry briefly
+your_db.save(user=current_user, license_key=order.license_key,
+             license_id=order.license_id)
+
+# 2) Any time you need the truth (app start, feature gate, cron):
+state = validate_license_key(stored_key)      # LicenseState
+if state.entitled: ...                        # cache against state.period_end
+# canceled purchases return entitled=False, status="canceled" — an
+# answer, not an exception. UtaNotFoundError means a key that was
+# never issued for your app.
+
+# 3) Compromised key? Rotate it — the old key dies instantly:
+state = regenerate_license_key(license_id)    # state.license_key is the new key
+```
+
+Buyers can always re-view their key on their UseThatApp management
+page, so "I lost my key" needs no support ticket and no rotation.
 
 ## Purchase links & pricing
 
@@ -167,9 +203,10 @@ for price in pricing.prices:
 `Price.amount` is a decimal **string** (e.g. `"10.00"`) — parse with
 `decimal.Decimal` if you need arithmetic. `Price.product_id` is the
 opaque `prod_…` identifier to gate features on after purchase — compare
-it against **`Entitlement.product_public_id`** (`Entitlement.product_id`
-still carries the legacy UUID until the platform's identifier cutover,
-after which both fields carry the same `prod_…` value).
+it against `Entitlement.product_id` or `Entitlement.product_public_id`:
+since the platform's identifier cutover they are a permanent
+equal-valued alias pair carrying the same `prod_…` value, so gate on
+either.
 
 Notes: UseThatApp is the **merchant of record** (checkout, tax, refunds
 are handled for you). Purchases are currently **US-only**. External

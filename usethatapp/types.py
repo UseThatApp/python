@@ -61,10 +61,10 @@ class Entitlement:
     """Product/plan display name, or ``None`` when not entitled."""
 
     product_id: Optional[str]
-    """Legacy UUID product identifier. For gating, prefer
-    :attr:`product_public_id` — it matches :attr:`Price.product_id` from the
-    pricing API. After the platform's identifier cutover this field carries
-    the same opaque ``prod_…`` value as ``product_public_id``."""
+    """The opaque ``prod_…`` product identifier — equal-valued with
+    :attr:`product_public_id` (a permanent alias pair since the
+    platform's identifier cutover) and matching :attr:`Price.product_id`
+    from the pricing API. Gate on either field."""
 
     status: str
     """``active``/``trialing``/``one_time_active``/``free``/``none``/…"""
@@ -183,3 +183,31 @@ class AppPrices:
 
 
 __all__ = ["UtaSession", "Entitlement", "AppInfo", "Price", "AppPrices"]
+
+
+@dataclass(frozen=True)
+class LicenseState:
+    """One license's live state from the License Key API (bring-your-
+    own-auth verification — no end-user OIDC anywhere).
+
+    ``license_key`` is set only by :func:`usethatapp.get_order` and
+    :func:`usethatapp.regenerate_license_key` — the two calls that hand
+    you key material. Cache ``entitled`` against ``period_end`` and
+    re-validate on your own cadence; a canceled license flips on the
+    next validation.
+    """
+
+    entitled: bool
+    status: str
+    license_id: str
+    product_public_id: str
+    period_end: Optional[str] = None
+    canceled_at: Optional[str] = None
+    license_key: Optional[str] = None
+    rotated_at: Optional[str] = None
+    product_id: str = ""
+    """Equal-valued alias of :attr:`product_public_id` (the opaque
+    ``prod_…`` id) — the same pair the entitlement endpoint carries, so
+    gating code works identically in both verification modes. Trailing
+    with a default so positional construction predating it still
+    works."""

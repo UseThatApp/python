@@ -38,14 +38,61 @@ class UtaTokenError(UtaError):
 
 
 class UtaPermissionError(UtaError):
-    """The token is valid but lacks the required scope (entitlement 403)."""
+    """The token is valid but the request is not permitted (403).
+
+    Usually a missing ``entitlements`` scope. When the server says the
+    app's developer has not enabled the entitlement service, the more
+    specific :class:`UtaServiceNotEnabledError` subclass is raised
+    instead — existing ``except UtaPermissionError`` blocks still catch
+    it.
+    """
+
+
+class UtaServiceNotEnabledError(UtaPermissionError):
+    """The app's developer has not enabled the Hosted sign-in add-on.
+
+    The token is fine and no retry, refresh, or re-consent will help:
+    Hosted sign-in is switched off for this app. The developer turns it
+    on from the app's manage hub (Integration panel → Hosted sign-in).
+    """
+
+
+class UtaNotFoundError(UtaError):
+    """The License Key API could not find what you referenced.
+
+    ``code`` says what: ``unknown_key`` (a key we never issued — or
+    another app's), ``unknown_order`` (bad/expired order ref), or
+    ``unknown_license`` (no such license id for your app).
+    """
+
+    def __init__(self, message: str, code: str = ""):
+        super().__init__(message)
+        self.code = code
+
+
+class UtaOrderProcessingError(UtaError):
+    """The order is genuine but its license hasn't landed yet (payment
+    webhooks run seconds behind checkout). Retry briefly."""
+
+
+class UtaLicenseCanceledError(UtaError):
+    """The license is terminally canceled — its key cannot be
+    regenerated."""
 
 
 class UtaServerError(UtaError):
-    """A usethatapp.com endpoint returned 5xx, or the network failed.
+    """A usethatapp.com endpoint returned 5xx or 429, or the network failed.
 
-    Callers MAY retry with backoff.
+    Retriable. On a rate limit (429), ``retry_after`` carries the server's
+    ``Retry-After`` header in seconds — use it as the backoff interval
+    instead of guessing. ``None`` when the server sent none (5xx, network
+    errors).
     """
+
+    def __init__(self, message: str, retry_after=None):
+        super().__init__(message)
+        self.retry_after = retry_after
+
 
 
 __all__ = [
@@ -55,5 +102,9 @@ __all__ = [
     "UtaAuthError",
     "UtaTokenError",
     "UtaPermissionError",
+    "UtaServiceNotEnabledError",
+    "UtaNotFoundError",
+    "UtaOrderProcessingError",
+    "UtaLicenseCanceledError",
     "UtaServerError",
 ]
