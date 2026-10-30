@@ -148,7 +148,21 @@ def test_get_entitlement_licensed(oidc_routes):
     assert ent.entitled and ent.version == "Pro" and ent.product_id == "p-1"
     assert ent.product_public_id == "prod_abc123"
     assert ent.status == "active" and ent.is_free is False
+    assert ent.is_trial is False
     assert ent.period_end == "2026-07-01"
+
+
+def test_get_entitlement_trialing(oidc_routes):
+    oidc_routes.get(API_URL + "/licensing/entitlement/").mock(
+        return_value=httpx.Response(200, json={
+            "entitled": True, "version": "Pro", "product_id": "prod_abc",
+            "product_public_id": "prod_abc", "status": "trialing",
+            "is_free": False, "is_trial": True, "period_end": "2026-11-11",
+        })
+    )
+    ent = get_entitlement("at-123")
+    assert ent.entitled and ent.is_trial and ent.status == "trialing"
+    assert ent.period_end == "2026-11-11"
 
 
 def test_get_entitlement_free(oidc_routes):
