@@ -73,7 +73,7 @@ from usethatapp import (
     get_prices,         # () -> AppPrices      (anonymous public API)
     get_prices_async,
     UtaSession,         # sub, access_token, refresh_token, id_token, expires_at, ...
-    Entitlement,        # entitled, version, product_id, product_public_id, status, ...
+    Entitlement,        # entitled, version, product_id, product_public_id, status, is_trial, ...
     AppInfo,            # client_id, name, tagline, listing_mode, url, marketplace_url
     Price,              # public_id, product_id, product_name, amount, currency, ...
     AppPrices,          # client_id, app_name, has_free_tier, prices
@@ -153,6 +153,8 @@ your_db.save(user=current_user, license_key=order.license_key,
 # 2) Any time you need the truth (app start, feature gate, cron):
 state = validate_license_key(stored_key)      # LicenseState
 if state.entitled: ...                        # cache against state.period_end
+# state.is_trial: in a free trial — entitled, nothing charged yet, and
+# period_end is the conversion date. Show a banner; gate nothing extra.
 # canceled purchases return entitled=False, status="canceled" — an
 # answer, not an exception. UtaNotFoundError means a key that was
 # never issued for your app.

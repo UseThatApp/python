@@ -87,6 +87,15 @@ class Entitlement:
     :attr:`Price.product_id` from the pricing API. New integrations should
     gate on this field."""
 
+    is_trial: bool = False
+    """True while the user is in a free trial of a paid plan: entitled to
+    the plan's real functionality, nothing charged yet. While true,
+    :attr:`period_end` is the date the trial converts (the first charge).
+    A canceled trial keeps ``entitled`` until that date and then drops it
+    — never cache past ``period_end``. Explicit so you never string-match
+    :attr:`status`. Trailing with a default (see the note above) so
+    positional construction predating it still works."""
+
 
 @dataclass(frozen=True)
 class AppInfo:
@@ -211,3 +220,7 @@ class LicenseState:
     gating code works identically in both verification modes. Trailing
     with a default so positional construction predating it still
     works."""
+
+    is_trial: bool = False
+    """True while the license is in its free trial — see
+    :attr:`Entitlement.is_trial`."""

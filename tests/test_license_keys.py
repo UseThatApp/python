@@ -44,6 +44,7 @@ def test_validate_sends_client_credentials(respx_mock):
     )
     state = validate_license_key("key_abc")
     assert state.entitled and state.status == "active"
+    assert state.is_trial is False
     assert state.license_id == STATE["license_id"]
     assert state.license_key is None
     request = route.calls.last.request

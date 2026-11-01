@@ -694,6 +694,7 @@ def _parse_entitlement(data: Mapping[str, Any]) -> Entitlement:
         period_end=data.get("period_end"),
         product_public_id=data.get("product_public_id"),
         raw=dict(data),
+        is_trial=bool(data.get("is_trial", False)),
     )
 
 
@@ -870,6 +871,7 @@ def _parse_license_state(data: Mapping[str, Any]) -> LicenseState:
         canceled_at=data.get("canceled_at"),
         license_key=data.get("license_key"),
         rotated_at=data.get("rotated_at"),
+        is_trial=bool(data.get("is_trial", False)),
         # Alias pair: fall back to product_public_id against a server
         # that predates the identifier cutover.
         product_id=str(
