@@ -1,34 +1,14 @@
 # usethatapp
 
-Python SDK for [usethatapp.com](https://usethatapp.com). usethatapp.com is
-an **OpenID Connect provider**: this SDK logs a user in through the
-marketplace, identifies them by a privacy-preserving `sub`, and tells you
-their **live license entitlement** for your app.
+Python SDK for [UseThatApp](https://www.usethatapp.com), the merchant of
+record for web apps. You put Buy buttons on your own website; UseThatApp
+runs checkout, charges the card, collects and remits tax, handles refunds,
+and pays you through Stripe. This SDK lets your server show live prices,
+build checkout links, and check what each customer bought.
 
-**Framework-agnostic.** The SDK never touches your web framework — it
-takes and returns plain strings and one JSON-able `flow_state` dict. You
-wire the three framework-specific bits yourself (read the callback query
-params, store `flow_state` in your session, issue the redirect). Works
-with Django, Flask, FastAPI, Starlette, Dash, Streamlit, plain WSGI, a
-CLI — anything. Runtime deps: `httpx`, `joserfc`.
-
-> **v2.0 is a breaking rewrite.** The v1 launch-envelope / `user_key` /
-> `get_version` handoff is replaced by standard OAuth2/OIDC. See
-> [CHANGELOG.md](./CHANGELOG.md) and *Migrating from v1* below.
-
-## How it works
-
-1. **Login (redirect).** Start a login with `begin_login()`, send the user
-   to usethatapp.com to authenticate, and finish in your callback with
-   `complete_login()`. You get a `UtaSession` carrying the user's `sub`
-   (a stable, **per-app**, pseudonymous id — no PII) and OAuth tokens.
-2. **Entitlement (Bearer query).** Call `get_entitlement(access_token)`
-   whenever you need the user's current license. It's always
-   authoritative — a canceled license stops being entitled immediately.
-
-`sub` is **pairwise**: stable for a user within *your* app, but different
-in every other app, so it can't be correlated across apps. Use it as your
-local user key — and key off `sub`, never an email (we never share one).
+- Docs: <https://docs.usethatapp.com>
+- AI agents: read <https://docs.usethatapp.com/llms-full.txt> (the whole
+  site as one Markdown file) and follow its "Rules for AI agents".
 
 ## Install
 
@@ -36,212 +16,146 @@ local user key — and key off `sub`, never an email (we never share one).
 pip install usethatapp
 ```
 
-Python 3.9+. Runtime deps: `httpx`, `joserfc`. No web framework required.
+Python 3.9+. Runtime dependencies: `httpx`, `joserfc`. The SDK is
+**server-side only**: it holds your client secret, so never run it in a
+browser or ship it inside a desktop app. It never touches your web
+framework — it takes and returns plain values, and you wire it into your
+routes.
 
-## Settings
+## Configure
 
-Read from `django.conf.settings` if Django is installed and configured,
-otherwise from environment variables.
+Settings come from `django.conf.settings` when Django is configured,
+otherwise from environment variables. `configure(...)` overrides either in
+code.
 
-| Name                          | Required | Purpose                                                        |
-|-------------------------------|----------|----------------------------------------------------------------|
-| `UTA_CLIENT_ID`               | yes      | Your app's OAuth client id (from the usethatapp.com dashboard).|
-| `UTA_REDIRECT_URI`            | yes      | Your registered callback URL.                                  |
-| `UTA_CLIENT_SECRET`           | yes*     | Client secret. *Omit for a public (browser/native) PKCE client.|
-| `UTA_CLIENT_SECRET_PATH`      | no       | Read the secret from a mounted file instead (Render/k8s/Fly).  |
-| `UTA_ISSUER`                  | no       | Defaults to `https://www.usethatapp.com/o`.                    |
-| `UTA_API_URL`                 | no       | Defaults to `https://www.usethatapp.com`.                      |
-| `UTA_SCOPES`                  | no       | Defaults to `openid entitlements`.                             |
-| `UTA_CLOCK_SKEW_SECONDS`      | no       | ID-token validation leeway. Defaults to `60`.                  |
-| `UTA_REQUEST_TIMEOUT_SECONDS` | no       | Defaults to `10`.                                              |
+| Variable | Needed for |
+|---|---|
+| `UTA_CLIENT_ID` | Everything except `purchase_url` |
+| `UTA_CLIENT_SECRET` (or `UTA_CLIENT_SECRET_PATH` for a mounted file) | License keys, Hosted sign-in |
+| `UTA_REDIRECT_URI` | Hosted sign-in only |
+| `UTA_SCOPES`, `UTA_API_URL`, `UTA_ISSUER`, `UTA_REQUEST_TIMEOUT_SECONDS`, `UTA_CLOCK_SKEW_SECONDS` | Optional; defaults point at production |
 
-## Public API
+The client id and secret are on your app's *Manage → Integration* page.
+The secret is shown once; keep it in your host's secret store.
+
+## Verify purchases with license keys (the default)
+
+Each purchase creates one license key. When checkout finishes, the buyer
+returns to your buy link's `next` URL with `?uta_order=…` appended. Your
+server exchanges that once for the key, stores it on the user signed in to
+*your* app, and validates it wherever you gate a paid feature. Your login
+stays yours.
 
 ```python
-from usethatapp import (
-    begin_login,        # -> (authorization_url, flow_state)
-    complete_login,     # (code=, state=, flow_state=) -> UtaSession
-    get_entitlement,    # (access_token) -> Entitlement
-    get_entitlement_async,
-    refresh,            # (refresh_token) -> UtaSession
-    userinfo,           # (access_token) -> {"sub": ...}
-    logout_url,         # (id_token=, post_logout_redirect_uri=) -> str
-    purchase_url,       # (price_id, *, next=, ref=, email=) -> str  (no network)
-    manage_url,         # (*, next=) -> str                          (no network)
-    get_app_info,       # () -> AppInfo        (anonymous public API)
-    get_app_info_async,
-    get_prices,         # () -> AppPrices      (anonymous public API)
-    get_prices_async,
-    UtaSession,         # sub, access_token, refresh_token, id_token, expires_at, ...
-    Entitlement,        # entitled, version, product_id, product_public_id, status, is_trial, ...
-    AppInfo,            # client_id, name, tagline, listing_mode, url, marketplace_url
-    Price,              # public_id, product_id, product_name, amount, currency, ...
-    AppPrices,          # client_id, app_name, has_free_tier, prices
-    # errors:
-    UtaError, UtaConfigError, UtaDiscoveryError, UtaAuthError,
-    UtaTokenError, UtaPermissionError, UtaServiceNotEnabledError,
-    UtaNotFoundError, UtaOrderProcessingError, UtaLicenseCanceledError,
-    UtaServerError,
-)
+from usethatapp import UtaOrderProcessingError, get_order, validate_license_key
+
+# Return route, e.g. /thanks?uta_order=...
+try:
+    order = get_order(request.args["uta_order"])
+except UtaOrderProcessingError:
+    ...  # paid, key not stored yet: show "finishing up" and retry in a second or two
+current_user.license_key = order.license_key
+current_user.license_id = order.license_id
+
+# Any gate:
+state = validate_license_key(current_user.license_key)
+if state.entitled and state.product_public_id == "prod_<your-pro-id>":
+    ...  # paid feature
 ```
 
-## Quickstart — any framework
+- Gate on `entitled` and `product_public_id` (the plan's `prod_…` id;
+  `product_id` holds the same value). Never on the plan's display name.
+- A cancellation keeps `entitled=True` until `period_end`; the buyer paid
+  for that period. Cache the answer for a session or up to a day, never past
+  `period_end`.
+- A buyer who already holds a plan is sent back to `next` with no
+  `uta_order`; treat its absence as nothing to link.
+- A canceled key returns `entitled=False`; it does not raise.
+  `UtaNotFoundError` means the string was never a key for your app.
+- A lost key is always visible on the buyer's manage page. Rotate only a
+  leaked one: `regenerate_license_key(license_id)` returns the new key once
+  and kills the old one.
+
+Walkthrough, statuses and edge cases: <https://docs.usethatapp.com/license-keys>.
+
+## Show prices and link to checkout
+
+```python
+from usethatapp import get_prices, manage_url, purchase_url
+
+for price in get_prices().prices:          # anonymous; needs only UTA_CLIENT_ID
+    show_plan(price.product_name, price.amount, price.currency,
+              price.frequency, price.buy_url)
+
+purchase_url("prc_...", next="https://yourapp.example/thanks")   # no network call
+manage_url(next="https://yourapp.example/account")              # buyer's subscription page
+```
+
+Never hardcode prices: render them from `get_prices()` and use each
+price's `buy_url`. `amount` is a decimal string (`"10.00"`). `next` must be
+HTTPS on your app's registered domain (loopback hosts such as `localhost`
+are accepted for local testing). Until the seller is verified, the app is
+published and the product is active, a buy link shows the buyer a "not
+available" page instead of checkout; it answers 404 only for an unknown
+price id or an app whose sales UseThatApp has suspended. Details:
+<https://docs.usethatapp.com/sell>.
+
+## Hosted sign-in (optional add-on)
+
+Only if your app has no accounts of its own: UseThatApp runs login over
+OpenID Connect, and `get_entitlement` reports what the signed-in user
+bought. The entitlement call needs the Hosted sign-in add-on, switched on
+in the dashboard.
 
 ```python
 from usethatapp import begin_login, complete_login, get_entitlement
 
-# 1) Start login — however your framework spells "redirect":
-auth_url, flow_state = begin_login()
-save_to_session("uta_flow", flow_state)        # JSON-able dict
-return redirect(auth_url)
-
-# 2) In your callback (reads ?code=...&state=... off the request).
-#    On cancel/deny the provider sends ?error=... and no code — handle it first:
-if read_query("error"):
-    return redirect("/")   # login was canceled
-session = complete_login(
-    code=read_query("code"),
-    state=read_query("state"),
-    flow_state=load_from_session("uta_flow"),
-)
-save_to_session("uta_sub", session.sub)
-save_to_session("uta_access_token", session.access_token)
-
-# 3) Anywhere you gate features. Gate on product_public_id — the opaque
-#    prod_… id that matches Price.product_id from get_prices():
-ent = get_entitlement(load_from_session("uta_access_token"))
-if ent.entitled and ent.product_public_id == "prod_...":
-    ...
+auth_url, flow_state = begin_login()          # /login: keep flow_state in the session
+s = complete_login(code=..., state=..., flow_state=flow_state)   # /callback
+ent = get_entitlement(s.access_token)         # gate on ent.entitled + ent.product_public_id
 ```
 
-Runnable per-framework demos live under [`examples/`](./examples/). They
-are documentation only — nothing framework-specific ships in the package.
+Users are identified by `s.sub`, a pairwise pseudonymous id with no email or
+name. Setup, sign-out and stack notes: <https://docs.usethatapp.com/hosted-sign-in>.
 
-## Error mapping
+## Errors
 
-`get_entitlement` maps status codes to typed exceptions:
+Every exception subclasses `UtaError`.
 
-| Status | Exception                                     | Meaning                                       |
-|--------|-----------------------------------------------|-----------------------------------------------|
-| 401    | `UtaTokenError`                               | Access token invalid/expired — re-auth/refresh.|
-| 403 (`insufficient_scope`)   | `UtaPermissionError`            | Token lacks the `entitlements` scope.         |
-| 403 (`service_not_enabled`)  | `UtaServiceNotEnabledError`     | The Hosted sign-in add-on is switched off for this app. No retry, refresh, or re-consent will help — enable it on the app's manage page at www.usethatapp.com (Integration panel). |
-| 400    | `UtaError`                                    | Client not linked to an app (misconfig).      |
-| 429    | `UtaServerError`                              | Rate limited — back off; `e.retry_after` carries the server's `Retry-After` seconds (or `None`). |
-| 5xx    | `UtaServerError`                              | Retriable with backoff; `e.retry_after` when the server sent one. |
+| Exception | When |
+|---|---|
+| `UtaConfigError` | Missing settings, or the client id/secret was rejected |
+| `UtaNotFoundError` (`.code`) | A key, order or license id never issued for your app |
+| `UtaOrderProcessingError` | Order paid, key not stored yet: retry shortly |
+| `UtaLicenseCanceledError` | Rotating a key whose license has ended |
+| `UtaServerError` (`.retry_after`) | Rate limited (429) or a server error: back off and retry |
+| `UtaTokenError`, `UtaPermissionError`, `UtaServiceNotEnabledError`, `UtaAuthError`, `UtaDiscoveryError` | Hosted sign-in only |
 
-All inherit from `UtaError` — catch that for a single `except` clause.
-`UtaServiceNotEnabledError` subclasses `UtaPermissionError`, so existing
-`except UtaPermissionError` blocks keep working unchanged.
+Full table: <https://docs.usethatapp.com/rest-api#errors>.
 
-## License Key API — bring your own auth
+## API
 
-If you keep your own auth (Auth0, Clerk, homegrown) and use UseThatApp
-purely as merchant of record, skip the OIDC flow entirely and verify
-purchases with license keys. Server-side only; set `UTA_CLIENT_SECRET`
-(`UTA_REDIRECT_URI` is not needed for this mode).
+| Function | Returns |
+|---|---|
+| `get_order(ref)` / `validate_license_key(key)` / `regenerate_license_key(license_id)` | `LicenseState` |
+| `get_prices()` / `get_prices_async()` | `AppPrices` (with `Price` entries) |
+| `get_app_info()` / `get_app_info_async()` | `AppInfo` |
+| `purchase_url(price_id, *, next=, ref=, email=)` / `manage_url(*, next=)` | `str` (no network) |
+| `begin_login()` / `complete_login(code=, state=, flow_state=)` / `refresh(refresh_token)` | `(url, flow_state)` / `UtaSession` |
+| `get_entitlement(access_token)` / `get_entitlement_async(...)` | `Entitlement` |
+| `userinfo(access_token)` / `logout_url(id_token=, post_logout_redirect_uri=)` | `{"sub": …}` / `str` |
+| `configure(**settings)` / `load_config()` / `reset_config()` | Configuration |
 
-```python
-from usethatapp import get_order, regenerate_license_key, validate_license_key
+Every call is plain HTTPS underneath, documented at
+<https://docs.usethatapp.com/rest-api>.
 
-# 1) The buyer returns from checkout with ?uta_order=... — exchange it
-#    for their key and link it to YOUR signed-in user. No email matching.
-order = get_order(request.GET["uta_order"])   # raises UtaOrderProcessingError → retry briefly
-your_db.save(user=current_user, license_key=order.license_key,
-             license_id=order.license_id)
+## Examples
 
-# 2) Any time you need the truth (app start, feature gate, cron):
-state = validate_license_key(stored_key)      # LicenseState
-if state.entitled: ...                        # cache against state.period_end
-# state.is_trial: in a free trial — entitled, nothing charged yet, and
-# period_end is the conversion date. Show a banner; gate nothing extra.
-# canceled purchases return entitled=False, status="canceled" — an
-# answer, not an exception. UtaNotFoundError means a key that was
-# never issued for your app.
+[`examples/`](./examples/) holds runnable apps: `license_keys` (Flask,
+the default integration) and Hosted sign-in apps for Flask, Django and
+FastAPI.
 
-# 3) Compromised key? Rotate it — the old key dies instantly:
-state = regenerate_license_key(license_id)    # state.license_key is the new key
-```
+## Changelog and license
 
-Buyers can always re-view their key on their UseThatApp management
-page, so "I lost my key" needs no support ticket and no rotation.
-
-## Purchase links & pricing
-
-usethatapp.com can sell your app **from your own website**: hosted
-checkout links, a buyer management page, and a public pricing API. The
-SDK helpers are thin — the URL builders make no network calls, and the
-two GET functions hit **anonymous** endpoints (no auth, CORS-enabled), so
-they work even on a marketing page that never logs anyone in.
-
-Gate an upgrade CTA on the entitlement, then send the user to checkout:
-
-```python
-from usethatapp import get_entitlement, manage_url, purchase_url
-
-ent = get_entitlement(load_from_session("uta_access_token"))
-if not ent.entitled:
-    # Hosted checkout. `next` must be an HTTPS URL on your registered
-    # domain (validated server-side); omit it to land on your Login URL.
-    return redirect(purchase_url("prc_...", next="https://yourapp.example/welcome"))
-
-# Existing buyers manage (or cancel) their plan on usethatapp.com:
-billing_link = manage_url(next="https://yourapp.example/account")
-```
-
-Render pricing from the live API instead of hardcoding — sellers can
-change prices anytime:
-
-```python
-from usethatapp import get_prices
-
-pricing = get_prices()          # anonymous — no token needed
-for price in pricing.prices:
-    per = f"/{price.frequency}" if price.is_recurring else " one-time"
-    print(f"{price.product_name}: {price.amount} {price.currency}{per}")
-    print(f"  buy: {price.buy_url}")   # ready-made hosted checkout link
-```
-
-`Price.amount` is a decimal **string** (e.g. `"10.00"`) — parse with
-`decimal.Decimal` if you need arithmetic. `Price.product_id` is the
-opaque `prod_…` identifier to gate features on after purchase — compare
-it against `Entitlement.product_id` or `Entitlement.product_public_id`:
-since the platform's identifier cutover they are a permanent
-equal-valued alias pair carrying the same `prod_…` value, so gate on
-either.
-
-Notes: UseThatApp is the **merchant of record** (checkout, tax, refunds
-are handled for you). Purchases are currently **US-only**. External
-sales is in beta — buy links return **404 until it's enabled for your
-app**. Full guide: [docs.usethatapp.com](https://docs.usethatapp.com).
-
-## Signing out
-
-Sign-out is RP-initiated: redirect the user to `logout_url(id_token=…)`. Both
-outcomes — they confirm, or they choose "Stay signed in" — return to your
-`post_logout_redirect_uri`, so you **can't** tell which happened from the
-redirect alone.
-
-So **don't clear your session when you start logout.** Reconcile on return
-using the token instead: a confirmed logout revokes it, so your next
-`get_entitlement()` raises `UtaTokenError` (401) — drop the token then. If they
-stayed signed in, the token is still valid and they keep their session.
-Clearing eagerly logs the user out of your app even when they chose to stay.
-
-## Migrating from v1
-
-| v1                                      | v2                                              |
-|-----------------------------------------|-------------------------------------------------|
-| `get_user(payload)` (decrypt envelope)  | `begin_login()` + `complete_login()` (OIDC)     |
-| `UtaUser.user_key`                       | `UtaSession.sub` (pairwise, stable per app)     |
-| `get_version(user_key) -> str`           | `get_entitlement(access_token) -> Entitlement`  |
-| RSA keys (`UTA_PRIVATE_KEY`, market key) | OAuth client (`UTA_CLIENT_ID`/`UTA_CLIENT_SECRET`)|
-| `UTA_APP_ID`                             | (gone — the client id identifies your app)      |
-| `uta_launch_view` Django decorator       | (gone — wire your own callback view)            |
-
-Register an OAuth client and redirect URI in your usethatapp.com
-developer dashboard to get `UTA_CLIENT_ID` / `UTA_CLIENT_SECRET`.
-
-## License
-
-MIT — see [LICENSE](./LICENSE).
+[CHANGELOG.md](./CHANGELOG.md), including how to migrate from 1.x. MIT —
+see [LICENSE](./LICENSE).

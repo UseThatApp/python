@@ -13,7 +13,7 @@ locally with `DEBUG=True` and a throwaway session key; don't deploy it.
 pip install usethatapp django
 
 export UTA_CLIENT_ID=...
-export UTA_CLIENT_SECRET=...        # omit for a public/PKCE client
+export UTA_CLIENT_SECRET=...        # server-side only
 export UTA_REDIRECT_URI=http://localhost:8000/callback/
 
 python app.py runserver

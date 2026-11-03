@@ -6,6 +6,17 @@ format inspired by "Keep a Changelog".
 
 ## [Unreleased]
 
+### Documentation
+
+- README rewritten around the default integration: license keys first,
+  then prices and buy links, with Hosted sign-in as the optional add-on.
+  Corrected stale claims (purchases are open to international buyers;
+  external sales is on by default; a cancellation keeps access until
+  `period_end`; seller apps always use a confidential client, so the
+  secret is never optional). The v1 migration table moved here, under
+  2.0.0.
+- New `examples/license_keys` Flask app for the license-key flow.
+
 ## [2.3.0] - 2026-10-29
 
 ### Added
@@ -198,6 +209,17 @@ identity-integrity and error-contract bugs in the 2.0 OIDC path.
 Breaking rewrite onto standard OAuth2 / OpenID Connect. usethatapp.com is
 now an OpenID Provider; the SDK is a framework-agnostic OIDC client. The
 v1 launch-envelope push + signed `get_version` pull are gone.
+
+### Migrating from 1.x
+
+| 1.x | 2.x |
+|---|---|
+| `get_user(payload)` (decrypt envelope) | `begin_login()` + `complete_login()` (OIDC) |
+| `UtaUser.user_key` | `UtaSession.sub` (pairwise, stable per app) |
+| `get_version(user_key) -> str | None` | `get_entitlement(access_token) -> Entitlement` |
+| RSA keys (`UTA_PRIVATE_KEY`, market key) | OAuth client (`UTA_CLIENT_ID` / `UTA_CLIENT_SECRET`) |
+| `UTA_APP_ID` | Gone: the client id identifies your app |
+| `uta_launch_view` Django decorator | Gone: wire your own callback view |
 
 ### Removed
 
