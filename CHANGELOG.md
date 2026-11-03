@@ -4,7 +4,7 @@ All notable changes to this project are documented in this file. This project ad
 [Semantic Versioning](https://semver.org/) and follows a clear, machine- and human-readable
 format inspired by "Keep a Changelog".
 
-## [Unreleased]
+## [2.3.1] - 2026-11-02
 
 ### Documentation
 
